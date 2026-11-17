@@ -4,6 +4,7 @@
 #include "lm_crypto.h"
 #include "lm_cloud.h"
 #include "ui.h"
+#include "weather.h"
 
 static TaskHandle_t g_cloudTask;
 static void cloudTask(void*) {
@@ -14,8 +15,10 @@ static void cloudTask(void*) {
 void setup() {
   auto c = M5.config();
   c.internal_spk    = true;
+  c.internal_mic    = false;   // never configure the PDM mic (no audio input used)
   c.serial_baudrate = 115200;
   M5.begin(c);
+  M5.Mic.end();                // belt and braces: make sure the mic driver is stopped
 
   settings.load();
   ui::begin();
@@ -28,14 +31,15 @@ void setup() {
   if (!lmcrypto::init()) { ui::splash("crypto init failed"); delay(3000); }
   // Network/cloud on core 0; UI/touch stays on core 1 (Arduino loop).
   xTaskCreatePinnedToCore(cloudTask, "lmcloud", 12*1024, nullptr, 2, &g_cloudTask, 0);
+  weather::begin();                         // own task; waits for WiFi + a city
 }
 
 void loop() {
-  // serial debug shell: '0'..'3' force screen ('1'→brewing@24.7s), 's' screenshot,
+  // serial debug shell: '0'..'9' force screen ('9'=weather) ('1'→brewing@24.7s), 's' screenshot,
   // 'b' arm backflush (same as tapping START)
   while (Serial.available()) {
     int c=Serial.read();
-    if (c>='0'&&c<='8') ui::debugScreen(c-'0', c=='1'?24.7f:0);
+    if (c>='0'&&c<='9') ui::debugScreen(c-'0', c=='1'?24.7f:0);
     else if (c=='d'||c=='l') ui::setDark(c=='d');
     else if (c=='b') lmcloud::startBackflush();
     else if (c=='s') { vTaskSuspend(g_cloudTask); ui::screenshot(); vTaskResume(g_cloudTask); }

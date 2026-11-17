@@ -21,8 +21,16 @@ void Settings::load() {
   if (timeZoneIndex >= cfg::TIME_ZONE_COUNT) timeZoneIndex = cfg::DEF_TIME_ZONE_INDEX;
   shotHoldIndex = p_.getUChar("sh", cfg::DEF_SHOT_HOLD_INDEX);
   if (shotHoldIndex >= cfg::SHOT_HOLD_COUNT) shotHoldIndex = cfg::DEF_SHOT_HOLD_INDEX;
-  dimSec     = p_.getUChar("ds", 30);
-  sleepMin   = p_.getUChar("sm", 2);
+  dimSec     = p_.getUChar("ds", 0);
+  sleepMin   = p_.getUChar("sm", 0);
+  // The weather build is a wall display: on first boot of this firmware, clear
+  // the dim/sleep timers an earlier Strumento install may have saved.
+  if (!p_.getBool("wxv", false)) { dimSec = 0; sleepMin = 0; }
+  wxCity     = p_.getString("wc", "");
+  wxLat      = p_.getFloat("wla", 0);
+  wxLon      = p_.getFloat("wlo", 0);
+  wxHasLoc   = p_.getBool("wok", false);
+  wxIdleSec  = p_.getUChar("wi", 60);
   instId   = p_.getString("iid", "");
   size_t n = p_.getBytes("epk", ecPriv, sizeof ecPriv);
   ecPrivValid = (n == sizeof ecPriv);
@@ -44,6 +52,12 @@ void Settings::save() {
   p_.putUChar ("sh", shotHoldIndex);
   p_.putUChar ("ds", dimSec);
   p_.putUChar ("sm", sleepMin);
+  p_.putBool  ("wxv", true);
+  p_.putString("wc", wxCity);
+  p_.putFloat ("wla", wxLat);
+  p_.putFloat ("wlo", wxLon);
+  p_.putBool  ("wok", wxHasLoc);
+  p_.putUChar ("wi", wxIdleSec);
   p_.putString("iid", instId);
   if (ecPrivValid) p_.putBytes("epk", ecPriv, sizeof ecPriv);
   p_.end();

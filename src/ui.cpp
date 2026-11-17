@@ -3,6 +3,7 @@
 //
 //  Idle   : ivory enamel panel · single chronograph dial · brass hairlines
 //  Brewing: warm-black watch face · sweeping LM-red second hand · big numerals
+//  Weather: the resting screen — tap for the machine, a shot always takes over
 //
 //  Design notes:
 //    • One accent colour (LM_RED). Everything else is ivory/ink/brass.
@@ -18,6 +19,7 @@
 #include "keyboard.h"
 #include "fonts.h"
 #include "version.h"
+#include "weather.h"
 #include <time.h>
 #include <sys/time.h>
 
@@ -52,8 +54,10 @@ static AAFont AA_WORDMARK, AA_SERIF_SM, AA_LABEL, AA_LABEL_SM, AA_NUM_LG, AA_NUM
 #define F_NUM_LG    AA_NUM_LG.vlw
 #define F_NUM_MD    AA_NUM_MD.vlw
 
-enum class Screen { Home, Brewing, Controls, Settings, Stats };
-static Screen   g_scr = Screen::Home;
+enum class Screen { Home, Brewing, Controls, Settings, Stats, Weather };
+static Screen   g_scr = Screen::Weather;
+static bool     g_brewFromWx = false;   // shot started over Weather → return there
+static uint32_t g_wxVer = 0;            // last weather::version() drawn
 static bool     g_dirty = true;
 static M5Canvas g_can(&M5.Display);
 static uint32_t g_lastFrame = 0;
@@ -79,6 +83,7 @@ static bool     g_dimmed       = false;
 static uint32_t g_lastActivity = 0;
 static constexpr uint8_t DIM_OPTS[]   = {0,15,30,60,120};
 static constexpr uint8_t SLEEP_OPTS[] = {0,1,2,5,10,30};
+static constexpr uint8_t WX_IDLE_OPTS[] = {0,15,30,60,120,240};
 template<size_t N>
 static uint8_t nextOpt(const uint8_t (&a)[N], uint8_t cur){
   for(size_t i=0;i<N;++i) if(a[i]==cur) return a[(i+1)%N];
@@ -378,6 +383,172 @@ static void renderHome(const lmcloud::State& s){
   });
 }
 
+// ── WEATHER — the idle screen ────────────────────────────────────────────────
+// Icons are drawn, not bitmaps: same AA primitives as the dials, scaled by R.
+static void wxSun(int cx,int cy,float R){
+  for(int i=0;i<8;++i){
+    float a=i*45*DEG_TO_RAD, c=cosf(a), s=sinf(a);
+    g_can.drawWideLine(cx+c*R*0.62f,cy+s*R*0.62f, cx+c*R*0.9f,cy+s*R*0.9f,
+                       max(0.8f,R*0.06f), BRASS);
+  }
+  g_can.fillSmoothCircle(cx,cy,R*0.45f,BRASS_HI);
+}
+static void wxMoon(int cx,int cy,float R){
+  g_can.fillSmoothCircle(cx,cy,R*0.55f,BRASS_HI);
+  g_can.fillSmoothCircle(cx+R*0.28f,cy-R*0.2f,R*0.46f,BG());
+}
+static void wxCloud(int cx,int cy,float R,uint16_t col){
+  // three lobes over a flat base; drawn once in BG a touch larger as a halo so
+  // the cloud reads cleanly where it overlaps the sun
+  for(int pass=0;pass<2;++pass){
+    float g = pass?0:R*0.07f; uint16_t c = pass?col:BG();
+    g_can.fillSmoothCircle(cx-R*0.35f,cy+R*0.10f,R*0.32f+g,c);
+    g_can.fillSmoothCircle(cx+R*0.05f,cy-R*0.12f,R*0.42f+g,c);
+    g_can.fillSmoothCircle(cx+R*0.42f,cy+R*0.12f,R*0.30f+g,c);
+    g_can.fillRect(cx-R*0.35f,cy+R*0.10f-g,R*0.77f,R*0.32f+2*g,c);
+  }
+}
+static void wxIcon(int cx,int cy,float R,int code,bool day){
+  using I=weather::Icon;
+  const uint16_t cloud = g_dark?0x6B4D:INK_40;
+  I ic = weather::codeIcon(code);
+  auto lines=[&](int n,float len,float slant,float w){   // precip below a cloud
+    for(int i=0;i<n;++i){
+      float x=cx+(i-(n-1)/2.f)*R*0.32f, y=cy+R*0.48f;
+      g_can.drawWideLine(x,y, x-slant*R,y+len*R, max(0.7f,w*R), FG());
+    }
+  };
+  switch(ic){
+    case I::Clear:     day?wxSun(cx,cy,R):wxMoon(cx,cy,R); break;
+    case I::PartCloud:
+      day?wxSun(cx-R*0.28f,cy-R*0.28f,R*0.75f):wxMoon(cx-R*0.25f,cy-R*0.3f,R*0.75f);
+      wxCloud(cx+R*0.1f,cy+R*0.12f,R*0.85f,cloud); break;
+    case I::Cloud:     wxCloud(cx,cy,R,cloud); break;
+    case I::Fog:
+      for(int i=-1;i<=1;++i){
+        float hw=R*(i?0.6f:0.8f);
+        g_can.drawWideLine(cx-hw+i*R*0.1f,cy+i*R*0.3f,cx+hw+i*R*0.1f,cy+i*R*0.3f,
+                           max(0.8f,R*0.07f),cloud);
+      }
+      break;
+    case I::Drizzle:   wxCloud(cx,cy-R*0.15f,R,cloud); lines(3,0.18f,0.05f,0.05f); break;
+    case I::Rain:      wxCloud(cx,cy-R*0.15f,R,cloud); lines(3,0.36f,0.12f,0.05f); break;
+    case I::Snow:
+      wxCloud(cx,cy-R*0.15f,R,cloud);
+      for(int i=0;i<3;++i)
+        g_can.fillSmoothCircle(cx+(i-1)*R*0.32f, cy+R*(i==1?0.7f:0.58f),
+                               max(1.2f,R*0.07f), FG());
+      break;
+    case I::Storm: {
+      wxCloud(cx,cy-R*0.15f,R,cloud);
+      float bx=cx+R*0.02f, by=cy+R*0.35f;                    // lightning in the accent
+      g_can.fillTriangle(bx+R*0.12f,by, bx-R*0.14f,by+R*0.34f, bx+R*0.02f,by+R*0.34f, LM_RED);
+      g_can.fillTriangle(bx-R*0.02f,by+R*0.28f, bx+R*0.14f,by+R*0.28f, bx-R*0.1f,by+R*0.66f, LM_RED);
+      break; }
+    default:           g_can.drawSpot(cx,cy,3,INK_40);
+  }
+}
+
+// Whole degrees in the big numeral face (digits only — minus and ° are drawn).
+static void wxBigTemp(int cx,int cy,float v){
+  int iv=(int)lroundf(v);
+  char b[8]; snprintf(b,sizeof b,"%d",abs(iv));
+  g_can.setFont(&F_NUM_LG); g_can.setTextColor(FG());
+  g_can.setTextDatum(middle_center);
+  int tw=g_can.textWidth(b);
+  g_can.drawString(b,cx,cy);
+  if (iv<0) g_can.drawWideLine(cx-tw/2-20,cy,cx-tw/2-8,cy,1.6f,FG());
+  ring(cx+tw/2+7, cy-16, 4,2, FG(), BG());
+}
+
+static String asciiUpper(const String& in, size_t maxLen){
+  String o;
+  for(size_t i=0;i<in.length() && o.length()<maxLen;++i){
+    char c=in[i];
+    if ((uint8_t)c>=32 && (uint8_t)c<127) o += (char)toupper(c);
+  }
+  return o;
+}
+
+static void renderWeather(const lmcloud::State& s){
+  g_can.fillScreen(BG()); vignette(); g_btns.clear();
+  header(s);
+  auto w = weather::snapshot();
+  g_wxVer = weather::version();
+
+  if (!settings.wxHasLoc || !w.valid){
+    const char* msg = !settings.wxHasLoc ? "SET A CITY IN SETUP"
+                    : w.error.length()   ? "WEATHER UNAVAILABLE" : "FETCHING WEATHER";
+    tracked(W/2,96,msg,3,INK_40,&F_LABEL,middle_center);
+    if (settings.wxHasLoc && w.error.length())
+      tracked(W/2,118,asciiUpper(w.error,30).c_str(),1,INK_40,&F_LABEL_SM,middle_center);
+    else if (!settings.wxHasLoc)
+      tracked(W/2,118,"TAP TO OPEN SETUP",2,INK_40,&F_LABEL_SM,middle_center);
+  } else {
+    // ── now ──
+    wxIcon(80,86,34,w.code,w.isDay);
+    const int tx=214;
+    wxBigTemp(tx,70,w.temp);
+    tracked(tx,108,weather::codeLabel(w.code),2,FG(),&F_LABEL,middle_center);
+    char sub[40];
+    int64_t age = w.fetchedAt ? (int64_t)time(nullptr)-w.fetchedAt : 0;
+    if (age > 2*3600){                                        // stale — say so
+      snprintf(sub,sizeof sub,"UPDATED %s AGO",ago((int64_t)w.fetchedAt*1000).c_str());
+      tracked(tx,130,sub,1,LM_RED,&F_LABEL_SM,middle_center);
+    } else {
+      snprintf(sub,sizeof sub,"FEELS %d   WIND %d %s",(int)lroundf(w.feels),
+               (int)lroundf(w.wind), w.fahrenheit?"MPH":"KM/H");
+      tracked(tx,130,sub,1,INK_40,&F_LABEL_SM,middle_center);
+    }
+
+    // ── city + 4-day strip ──
+    String city = asciiUpper(settings.wxCity,20);
+    hairline(150, city.length()?city.c_str():nullptr);
+    static const char* WD[]={"SUN","MON","TUE","WED","THU","FRI","SAT"};
+    const int cw=(W-24)/weather::DAYS;
+    for(int i=0;i<weather::DAYS;++i){
+      const auto& d=w.days[i];
+      if (d.code<0) continue;
+      int cx=12+cw*i+cw/2;
+      tracked(cx,166,i==0?"TODAY":WD[d.wday%7],2,INK_40,&F_LABEL_SM,middle_center);
+      wxIcon(cx,186,11,d.code,true);
+      char hl[16]; snprintf(hl,sizeof hl,"%d",(int)lroundf(d.hi));
+      char lo[8];  snprintf(lo,sizeof lo,"%d",(int)lroundf(d.lo));
+      // hi in ink, lo in grey, centred as a pair
+      g_can.setFont(&F_LABEL); g_can.setTextDatum(middle_left);
+      int wh=g_can.textWidth(hl), wl=g_can.textWidth(lo), gap=8;
+      int x0=cx-(wh+gap+wl)/2;
+      g_can.setTextColor(FG());    g_can.drawString(hl,x0,207);
+      g_can.setTextColor(INK_40);  g_can.drawString(lo,x0+wh+gap,207);
+    }
+  }
+
+  // ── machine line — the dial in one sentence ──
+  bool on = s.machine==lmcloud::MachineStatus::PoweredOn ||
+            s.machine==lmcloud::MachineStatus::Brewing;
+  char ml[32];
+  if (on && s.coffeeTarget>0)
+    snprintf(ml,sizeof ml,"%s  %.0f",boilerWord(s.coffeeStatus),c2disp(s.coffeeTarget));
+  else
+    snprintf(ml,sizeof ml,"%s", s.machine==lmcloud::MachineStatus::StandBy?"STANDBY"
+                              : s.machine==lmcloud::MachineStatus::Off    ?"OFF"
+                              : s.net>=lmcloud::Net::AuthOk               ?"—"
+                                                                          :"OFFLINE");
+  tracked(18,226,ml,2,
+          on && s.coffeeStatus==lmcloud::BoilerStatus::Ready ? FG() : INK_40,
+          &F_LABEL_SM,middle_left);
+  if (s.lastShotSec>0){
+    char rb[24]; snprintf(rb,sizeof rb,"LAST %.1fs  %s AGO",s.lastShotSec,ago(s.lastShotAtMs).c_str());
+    tracked(W-18,226,rb,1,INK_40,&F_LABEL_SM,middle_right);
+  }
+
+  // whole screen is the button
+  g_btns.push_back({0,0,W,H,[]{
+    g_scr = settings.wxHasLoc ? Screen::Home : Screen::Settings;
+    g_ctrlScroll=0; g_homePage=0; g_dirty=true;
+  }});
+}
+
 // ── BREWING — the chronograph ────────────────────────────────────────────────
 static void renderBrewing(const lmcloud::State& s){
   g_can.fillScreen(NIGHT); g_btns.clear();
@@ -661,6 +832,22 @@ static void renderSettings(){
     applyTimeZone();
     g_dirty=true;
   }); y+=36;
+  settingRow(y,"weather", settings.wxHasLoc?settings.wxCity:String("tap to set"), false, []{
+    String q = settings.wxCity;
+    if (!keyboardPrompt(M5.Display,"City  (e.g. Portland, Oregon)",q) || q.isEmpty()){ g_dirty=true; return; }
+    splash("finding city ...");
+    String name, err; float lat, lon;
+    if (weather::geocode(q,name,lat,lon,err)){
+      settings.wxCity=name; settings.wxLat=lat; settings.wxLon=lon; settings.wxHasLoc=true;
+      settings.save();
+      weather::refresh();
+      splash(name.c_str()); delay(1200);
+    } else {
+      String m = "couldn't find city: " + err;
+      splash(m.c_str()); delay(2000);
+    }
+    g_dirty=true;
+  }); y+=36;
   settingRow(y,"shot hold", cfg::shotHoldChoice(settings.shotHoldIndex).label, false, []{
     settings.shotHoldIndex = (settings.shotHoldIndex + 1) % cfg::SHOT_HOLD_COUNT;
     settings.save();
@@ -673,6 +860,9 @@ static void renderSettings(){
   }); y+=40;
   cycleRow(y,"AUTO SLEEP", minLbl(settings.sleepMin).c_str(), []{
     settings.sleepMin=nextOpt(SLEEP_OPTS,settings.sleepMin); settings.save(); g_dirty=true;
+  }); y+=40;
+  cycleRow(y,"WEATHER AFTER", secLbl(settings.wxIdleSec).c_str(), []{
+    settings.wxIdleSec=nextOpt(WX_IDLE_OPTS,settings.wxIdleSec); settings.save(); g_dirty=true;
   }); y+=40;
 
   g_can.clearClipRect();
@@ -704,13 +894,14 @@ static void render(){
            s.backflush==lmcloud::BackflushStatus::Off && g_scr!=Screen::Settings){
     // backflush cycles pulse the pump and report Brewing — that's cleaning,
     // not a shot, so don't hijack the chronograph for it
+    if (g_scr!=Screen::Brewing) g_brewFromWx = (g_scr==Screen::Weather);
     g_scr=Screen::Brewing; g_shotHoldUntil=0;        // live brew — cancel any freeze
   }
   else if (g_scr==Screen::Brewing &&
            s.backflush!=lmcloud::BackflushStatus::Off){
     // a cleaning pulse leaked us onto the chronograph (backflush status landed
     // a frame late) — bail without faking a "shot ended" freeze
-    g_shotHoldUntil=0; g_scr=Screen::Home;
+    g_shotHoldUntil=0; g_scr=g_brewFromWx?Screen::Weather:Screen::Home;
   }
   else if (g_scr==Screen::Brewing){
     // Brew ended. The cloud reports the stop a beat after the paddle drops, so
@@ -725,7 +916,7 @@ static void render(){
     }
     if (g_shotHoldUntil==0 ||
         (g_shotHoldUntil!=SHOT_HOLD_UNTIL_TAP && millis()>=g_shotHoldUntil)){
-      g_shotHoldUntil=0; g_scr=Screen::Home;
+      g_shotHoldUntil=0; g_scr=g_brewFromWx?Screen::Weather:Screen::Home;
     }
   }
   switch(g_scr){
@@ -734,6 +925,7 @@ static void render(){
     case Screen::Controls: renderControls(s); break;
     case Screen::Settings: renderSettings();  break;
     case Screen::Stats:    renderStats(s);    break;
+    case Screen::Weather:  renderWeather(s);  break;
   }
   lmcloud::unlockState();
   g_can.pushSprite(0,0);
@@ -799,6 +991,7 @@ void debugScreen(int n,float arg){
   g_homePage   = (n==6)?1:(n==7)?2:0;
   g_ctrlScroll = 0;
   g_scr = (n==4||n==6||n==7)?Screen::Home
+        : (n==9)?Screen::Weather
         : (n==5)?Screen::Stats
         : (n==8)?Screen::Settings : (Screen)n;
   render();
@@ -856,7 +1049,7 @@ void tick(){
   }
   if (t.wasReleased() && !g_dragging && !s_swallow){
     if (g_scr==Screen::Brewing && g_shotHoldUntil==SHOT_HOLD_UNTIL_TAP) {
-      g_shotHoldUntil=0; g_scr=Screen::Home; g_dirty=true;
+      g_shotHoldUntil=0; g_scr=g_brewFromWx?Screen::Weather:Screen::Home; g_dirty=true;
     }
     for(auto& b:g_btns) if(t.x>=b.x&&t.x<b.x+b.w&&t.y>=b.y&&t.y<b.y+b.h){
       M5.Speaker.tone(2200,18);
@@ -866,6 +1059,16 @@ void tick(){
     }
   }
   if (t.wasReleased()) s_swallow=false;
+
+  // ── idle → weather ── Settings is exempt (keyboard / setup in progress), and
+  // so is an armed or running backflush (the Controls countdown matters then).
+  if (settings.wxIdleSec && !t.isPressed() &&
+      (g_scr==Screen::Home || g_scr==Screen::Controls || g_scr==Screen::Stats) &&
+      lmcloud::state().backflush==lmcloud::BackflushStatus::Off &&
+      now-g_lastActivity > (uint32_t)settings.wxIdleSec*1000){
+    g_scr=Screen::Weather; g_ctrlScroll=0; g_homePage=0; g_dirty=true;
+  }
+  if (g_scr==Screen::Weather && weather::version()!=g_wxVer) g_dirty=true;
 
   // ── battery poll (AXP I2C) — 5 s cadence, redraw only on change ──
   static uint32_t s_batAt=0;

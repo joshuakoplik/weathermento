@@ -43,7 +43,9 @@ src/
   lm_crypto.*     P-256 keypair, LM proof rotation, request signing
   lm_cloud.*      REST + STOMP-over-WSS client, state model, command queue
   keyboard.*      modal touchscreen QWERTY
-  ui.*            screens (Home / Brewing / Controls / Settings / Stats)
+  ui.*            screens (Weather / Home / Brewing / Controls / Settings / Stats)
+  weather.*       Open-Meteo forecast + geocoding client (own task, core 0)
+  wx_ca.h         root CAs for the weather APIs
   main.cpp        boot + FreeRTOS task split (cloud on core 0, UI on core 1)
 tools/            font generator, version stamp, serial monitor, screenshot
 web/              ESP Web Tools installer page (served via GitHub Pages)
@@ -57,7 +59,7 @@ install.sh        guided local build + flash
 .venv/bin/python tools/shot.py --dark   # dark-mode variants
 ```
 
-Serial debug shell: `0`-`5` force a screen, `d`/`l` toggle theme, `s` dump
+Serial debug shell: `0`-`9` force a screen (`9` = weather), `d`/`l` toggle theme, `s` dump
 framebuffer.
 
 ## Regenerating fonts
