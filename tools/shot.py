@@ -8,7 +8,16 @@ import sys, time, base64, os, re, serial
 from PIL import Image
 B64=re.compile(r"^[A-Za-z0-9+/]{4,}=*$")
 
-PORT="/dev/cu.usbserial-5B1F0085301"; W,H=320,240
+def find_port():
+    """$STRUMENTO_PORT, else the first USB serial device that looks like a Core2."""
+    import glob, os
+    if os.environ.get("STRUMENTO_PORT"): return os.environ["STRUMENTO_PORT"]
+    for pat in ("/dev/cu.usbserial*","/dev/cu.wchusbserial*","/dev/cu.SLAB_USBtoUART*",
+                "/dev/ttyUSB*","/dev/ttyACM*"):
+        hits=sorted(glob.glob(pat))
+        if hits: return hits[0]
+    raise SystemExit("No USB serial port found - plug in the Core2 or set STRUMENTO_PORT")
+PORT=find_port(); W,H=320,240
 import sys
 SCREENS={"home_on":"l4","home_tally":"l6","home_clock":"l7","home_standby":"l0",
          "brew":"1","controls":"l2","stats":"l5","setup":"l3","setup2":"l8","weather":"l9"}
