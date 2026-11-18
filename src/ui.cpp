@@ -272,6 +272,13 @@ static const char* boilerWord(lmcloud::BoilerStatus b){
     case B::StandBy:return "STANDBY";default:return "—";}
 }
 
+// Pre-brew / pre-infusion length (active mode's "in" + "out"), 0 when off.
+static float preSec(const lmcloud::State& s){
+  return s.preMode!=lmcloud::PreMode::Disabled ? max(0.f, s.preBrewIn+s.preBrewOut) : 0.f;
+}
+// Shot time as the dial shows it: paddle-up time minus the pre-phase.
+static float lastShot(const lmcloud::State& s){ return max(0.f, s.lastShotSec-preSec(s)); }
+
 // 20×10px cell, right-aligned at rx; bolt overlay while the AXP says charging.
 static void batteryGlyph(int rx,int cy,uint16_t bg,uint16_t fg){
   if (g_batPct<0) return;
@@ -429,7 +436,7 @@ static void homeTally(const lmcloud::State& s){
   tracked(cx,cy+26,"COFFEES",4,INK_40,&F_LABEL,middle_center);
   // last shot mark on the rim — fraction of a 60s sweep
   if (s.lastShotSec>0){
-    float a=(-90+constrain(s.lastShotSec,0.f,60.f)*6.f)*DEG_TO_RAD;
+    float a=(-90+constrain(lastShot(s),0.f,60.f)*6.f)*DEG_TO_RAD;
     g_can.drawSpot(cx+cosf(a)*(r-6), cy+sinf(a)*(r-6), 3, LM_RED);
   }
 }
@@ -470,7 +477,7 @@ static void renderHome(const lmcloud::State& s){
   bool cleanDue  = cleanDays > 7;
   if (s.lastShotSec>0){
     char l[20],rb[16];
-    snprintf(l,sizeof l,"LAST  %.1fs",s.lastShotSec);
+    snprintf(l,sizeof l,"LAST  %.1fs",lastShot(s));
     tracked(W/2-dotW/2-12,ly,l,1,INK_40,&F_LABEL_SM,middle_right);
     if (cleanDue) snprintf(rb,sizeof rb,"CLEAN  %dd",cleanDays);
     else          snprintf(rb,sizeof rb,"%s AGO",ago(s.lastShotAtMs).c_str());
@@ -682,7 +689,7 @@ static void renderWeather(const lmcloud::State& s){
           on && s.coffeeStatus==lmcloud::BoilerStatus::Ready ? FG() : INK_40,
           &F_LABEL_SM,middle_left);
   if (s.lastShotSec>0){
-    char rb[24]; snprintf(rb,sizeof rb,"LAST %.1fs  %s AGO",s.lastShotSec,ago(s.lastShotAtMs).c_str());
+    char rb[24]; snprintf(rb,sizeof rb,"LAST %.1fs  %s AGO",lastShot(s),ago(s.lastShotAtMs).c_str());
     tracked(W-18,226,rb,1,INK_40,&F_LABEL_SM,middle_right);
   }
 
@@ -698,10 +705,18 @@ static void renderBrewing(const lmcloud::State& s){
   g_can.fillScreen(NIGHT); g_btns.clear();
   header(s,true);
 
-  // Whole shot, paddle-up to paddle-down (pre-infusion included).
-  float sec = (g_dbgBrewSec>=0) ? g_dbgBrewSec
-            : s.brewingStartMs ? (epochMs()-s.brewingStartMs)/1000.0f : g_shotHold;
-  if (sec<0) sec=0;
+  // One continuous clock: t = time since paddle-up − pre-phase. It starts at
+  // −pre (e.g. −8), counts up through 0 into the shot — no snap back to zero.
+  // The post-shot hold shows the machine's final time minus the pre-phase.
+  bool  live  = (g_dbgBrewSec>=0) || s.brewingStartMs;
+  float total = (g_dbgBrewSec>=0) ? g_dbgBrewSec
+              : s.brewingStartMs ? (epochMs()-s.brewingStartMs)/1000.0f : g_shotHold;
+  if (total<0) total=0;
+  float pre   = preSec(s);
+  float t     = total - pre;
+  if (!live && t<0) t=0;                        // shot stopped inside the pre-phase
+  bool  inPre = t < 0;
+  uint16_t accent = inPre ? BRASS_HI : LM_RED;
 
   const int cx=W/2, cy=132, r=96;
   // bezel — brass ring (3px) on dark
@@ -719,24 +734,38 @@ static void renderBrewing(const lmcloud::State& s){
     }
   };
   // trail arc + hand — kept to the outer ring so the centre stays clear
-  float deg=fmodf(sec,60.f)*6.f;
-  if (deg>0.5f) smoothArc(cx,cy,r-5,3.0f, -90, -90+deg, LM_RED);
-  hand(cx,cy,r-10,-90+deg,LM_RED);
+  float deg;
+  if (inPre){
+    // hand left of 12 o'clock; brass arc = pre-infusion still to go, shrinking
+    deg = t*6.f;                                 // negative: anticlockwise of top
+    if (deg<-0.5f) smoothArc(cx,cy,r-5,3.0f, -90+deg, -90, BRASS_HI);
+  } else {
+    deg = fmodf(t,60.f)*6.f;
+    if (deg>0.5f) smoothArc(cx,cy,r-5,3.0f, -90, -90+deg, LM_RED);
+  }
+  hand(cx,cy,r-10,-90+deg,accent);
   // clear a disc for the readout so the hand never crosses it
   g_can.fillSmoothCircle(cx,cy,58,NIGHT);
   rimNums();    // numerals on top of arc/hand, outside the cleared disc
-  // big numerals
-  char tbuf[8]; snprintf(tbuf,sizeof tbuf,"%d",(int)sec);
-  g_can.setFont(&F_NUM_LG); g_can.setTextColor(LUME);
+  // big numerals — magnitude in the digit font; the minus sign is drawn
+  float a = fabsf(t);
+  char tbuf[8]; snprintf(tbuf,sizeof tbuf,"%d",(int)a);
+  g_can.setFont(&F_NUM_LG); g_can.setTextColor(inPre?BRASS_HI:LUME);
   g_can.setTextDatum(middle_center);
   int tw=g_can.textWidth(tbuf);
   g_can.drawString(tbuf,cx,cy-4);
-  g_can.setFont(&F_NUM_MD); g_can.setTextColor(BRASS_HI);
+  if (inPre) g_can.drawWideLine(cx-tw/2-20,cy-4,cx-tw/2-7,cy-4,2.0f,BRASS_HI);
+  g_can.setFont(&F_NUM_MD); g_can.setTextColor(inPre?INK_40:BRASS_HI);
   g_can.setTextDatum(bottom_left);
-  char frac[4]; snprintf(frac,sizeof frac,".%d",(int)(sec*10)%10);
+  char frac[4]; snprintf(frac,sizeof frac,".%d",(int)(a*10)%10);
   g_can.drawString(frac, cx+tw/2+2, cy+16);
 
-  tracked(cx,cy+40,"SECONDS",4,INK_40,&F_LABEL_SM,middle_center);
+  if (inPre)
+    tracked(cx,cy+40,
+            s.preMode==lmcloud::PreMode::PreInfusion?"PRE-INFUSION":"PRE-BREW",
+            3,BRASS_HI,&F_LABEL_SM,middle_center);
+  else
+    tracked(cx,cy+40,"SECONDS",4,INK_40,&F_LABEL_SM,middle_center);
 }
 
 // ── CONTROLS ─────────────────────────────────────────────────────────────────
