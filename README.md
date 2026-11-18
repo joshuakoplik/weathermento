@@ -74,6 +74,11 @@ This fork adds a weather screen that acts as the idle display:
   options are removed). Run it on USB power. The power button still turns it
   off.
 
+**Rotation:** the screen flips to stay upright either way up (landscape only),
+using the accelerometer. The first time it stands upright it learns which way
+is up; if it ever learns it backwards, **Setup → flip screen** corrects it.
+**Setup → rotation** switches between AUTO and FIXED.
+
 Set your location in **Setup → weather**: type a city (`Portland, Oregon`,
 `Paris, FR`) or raw coordinates (`45.52, -122.68`). Data comes from
 [Open-Meteo](https://open-meteo.com) — free, no API key — and refreshes every

@@ -17,6 +17,11 @@ struct Settings {
   float   wxLat = 0, wxLon = 0;
   bool    wxHasLoc = false;
   uint8_t wxIdleSec = 60;    // return to weather after N s untouched (0 = never)
+  // screen rotation (landscape, either way up)
+  bool    rotAuto    = true;  // follow the accelerometer
+  bool    rotFlipped = false; // FIXED mode: upside-down
+  int8_t  rotRefAxis = -1;    // learned: accel axis that reads gravity when upright
+  int8_t  rotRefSign = 0;     //   (0 = x, 1 = y; -1 = not learned yet) and its sign
   // crypto material — generated once, never shown
   String  instId;          // lowercase uuid
   uint8_t ecPriv[32];      // P-256 private scalar (raw big-endian)

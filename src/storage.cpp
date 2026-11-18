@@ -32,6 +32,10 @@ void Settings::load() {
   wxLon      = p_.getFloat("wlo", 0);
   wxHasLoc   = p_.getBool("wok", false);
   wxIdleSec  = p_.getUChar("wi", 60);
+  rotAuto    = p_.getBool("ra", true);
+  rotFlipped = p_.getBool("rf", false);
+  rotRefAxis = p_.getChar("rx", -1);
+  rotRefSign = p_.getChar("rs", 0);
   instId   = p_.getString("iid", "");
   size_t n = p_.getBytes("epk", ecPriv, sizeof ecPriv);
   ecPrivValid = (n == sizeof ecPriv);
@@ -59,6 +63,10 @@ void Settings::save() {
   p_.putFloat ("wlo", wxLon);
   p_.putBool  ("wok", wxHasLoc);
   p_.putUChar ("wi", wxIdleSec);
+  p_.putBool  ("ra", rotAuto);
+  p_.putBool  ("rf", rotFlipped);
+  p_.putChar  ("rx", rotRefAxis);
+  p_.putChar  ("rs", rotRefSign);
   p_.putString("iid", instId);
   if (ecPrivValid) p_.putBytes("epk", ecPriv, sizeof ecPriv);
   p_.end();

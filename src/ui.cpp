@@ -101,6 +101,47 @@ static void goToSleep(){
   esp_deep_sleep_start();       // last resort — never returns
 }
 
+// ── rotation ── landscape either way up. The Core2's IMU axes aren't remapped
+// by M5Unified, so rather than hard-code which way is "up" we learn it: the
+// first time the device stands upright, that orientation is taken as normal.
+// Setup → flip screen corrects a wrong guess (it inverts the learned sign).
+static uint8_t g_rotBase = 1;             // M5GFX's default for the Core2
+static bool    g_rotFlippedNow = false;
+static void applyRotation(bool flipped){
+  if (flipped==g_rotFlippedNow) return;
+  g_rotFlippedNow = flipped;
+  M5.Display.setRotation(flipped ? (g_rotBase+2)%4 : g_rotBase);
+}
+static void rotationTick(){
+  if (!settings.rotAuto){ applyRotation(settings.rotFlipped); return; }
+  static uint32_t s_at=0, s_since=0; static int s_want=-1;
+  uint32_t now=millis();
+  if (now-s_at<150) return;
+  s_at=now;
+  if (!M5.Imu.isEnabled()) return;
+  float ax,ay,az;
+  if (!M5.Imu.getAccel(&ax,&ay,&az)) return;
+  float v[2]={ax,ay};
+  int dom = fabsf(ax)>fabsf(ay) ? 0 : 1;
+  bool standing = fabsf(v[dom])>0.6f && fabsf(v[dom])>fabsf(az);   // not lying flat
+  if (!standing){ s_want=-1; return; }
+  if (settings.rotRefAxis<0){                      // first upright moment: learn
+    settings.rotRefAxis=dom; settings.rotRefSign = v[dom]>0 ? 1 : -1;
+    settings.save();
+    Serial.printf("[rot] learned upright: axis %c %+d\n", dom?'y':'x', settings.rotRefSign);
+    return;
+  }
+  float g = v[settings.rotRefAxis];
+  if (fabsf(g)<0.6f) return;                       // on its side / ambiguous
+  int want = ((g>0?1:-1)==settings.rotRefSign) ? 0 : 1;
+  if (want!=s_want){ s_want=want; s_since=now; return; }
+  if (now-s_since>700 && (bool)want!=g_rotFlippedNow){   // held for 0.7 s
+    applyRotation(want);
+    Serial.printf("[rot] %s\n", want?"flipped":"normal");
+    g_dirty=true;
+  }
+}
+
 struct Btn { int x,y,w,h; std::function<void()> tap; };
 static std::vector<Btn> g_btns;
 
@@ -959,6 +1000,19 @@ static void renderSettings(){
   cycleRow(y,"WEATHER AFTER", secLbl(settings.wxIdleSec).c_str(), []{
     settings.wxIdleSec=nextOpt(WX_IDLE_OPTS,settings.wxIdleSec); settings.save(); g_dirty=true;
   }); y+=40;
+  cycleRow(y,"ROTATION", settings.rotAuto?"AUTO":"FIXED", []{
+    settings.rotAuto=!settings.rotAuto;
+    settings.rotFlipped=g_rotFlippedNow;           // FIXED keeps the current way up
+    settings.save(); g_dirty=true;
+  }); y+=40;
+  cycleRow(y,"FLIP SCREEN", "FLIP", []{
+    // In AUTO, a flip means the learned "upright" was backwards: invert it.
+    if (settings.rotAuto && settings.rotRefAxis>=0) settings.rotRefSign=-settings.rotRefSign;
+    settings.rotFlipped=!g_rotFlippedNow;
+    settings.save();
+    applyRotation(!g_rotFlippedNow);
+    g_dirty=true;
+  }); y+=40;
 
   g_can.clearClipRect();
   int contentH = y - (top - g_ctrlScroll);
@@ -1040,6 +1094,8 @@ void begin(){
   g_can.setPsram(true);
   g_can.setColorDepth(16);
   g_can.createSprite(W,H);
+  g_rotBase = M5.Display.getRotation();
+  if (!settings.rotAuto) applyRotation(settings.rotFlipped);
   M5.Display.setBrightness(BRIGHT_FULL);
   g_lastActivity = millis();
   // Parse VLW headers once; setFont(&F_*) is then a pointer swap.
@@ -1104,6 +1160,7 @@ void debugScreen(int n,float arg){
 
 void tick(){
   M5.update();
+  rotationTick();
   uint32_t now=millis();
   if (g_vibOffAt && now>=g_vibOffAt){ M5.Power.setVibration(0); g_vibOffAt=0; }
 
