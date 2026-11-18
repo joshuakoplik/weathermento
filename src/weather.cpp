@@ -198,8 +198,12 @@ void begin() {
     Serial.printf("[wx] %u crash reboots in a row (reason %d) - weather paused\n",
                   (unsigned)s_rtcCrashes, (int)r);
   }
-  // Low priority, core 0 alongside lmcloud — a slow fetch never stalls the UI.
-  xTaskCreatePinnedToCore(task, "weather", 16 * 1024, nullptr, 1, &g_task, 0);
+  // Core 1 at idle priority. Not core 0: WiFi and lmcloud live there, and a
+  // TLS handshake here on top of LM's sign-in kept CPU 0 busy long enough to
+  // starve IDLE0 and trip the task watchdog (reboot loop). On core 1 at
+  // priority 0 the fetch only gets time the UI loop isn't using, and shares
+  // slices round-robin with IDLE1.
+  xTaskCreatePinnedToCore(task, "weather", 16 * 1024, nullptr, tskIDLE_PRIORITY, &g_task, 1);
 }
 
 // ── geocoding ────────────────────────────────────────────────────────────────
