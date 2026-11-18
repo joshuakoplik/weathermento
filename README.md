@@ -63,6 +63,9 @@ This fork adds a weather screen that acts as the idle display:
 - **Tap anywhere** to get the machine dial and controls.
 - **Back to weather** any time: the WEATHER key on the dial screen, or tap
   the top bar (logo / clock) on the dial, Machine and Stats screens.
+- **One-tap backflush:** the drop button beside the boiler dial arms the
+  backflush (then move the paddle within the countdown), same as Machine →
+  Backflush.
 - **Pull a shot** and the chronograph takes over from any screen (except
   Setup), then returns to weather when the shot hold ends.
 - **Untouched for a while** (default 1 min, Setup → *weather after*), the

@@ -318,6 +318,50 @@ static void homeDial(const lmcloud::State& s,bool on,float temp,
   }
 }
 
+// Water drop: round belly + pointed top. (x,y) = centre of the belly.
+static void droplet(float x,float y,float r,uint16_t col){
+  g_can.fillTriangle(x-r*0.93f,y-r*0.35f, x+r*0.93f,y-r*0.35f, x,y-r*2.2f, col);
+  g_can.fillSmoothCircle(x,y,r,col);
+}
+
+// One-tap backflush beside the boiler dial. Mirrors the Machine screen's
+// state machine: tap arms it (cloud → Requested), the machine then waits
+// ~15 s for the paddle (countdown), then pulses through the clean cycle.
+static void flushButton(const lmcloud::State& s,bool on){
+  const int cx=274, cy=100, r=27;
+  using BF=lmcloud::BackflushStatus;
+  const char* label="FLUSH";
+  uint16_t labelCol=INK_40;
+  if (s.backflush==BF::Requested){
+    uint32_t el=millis()-s.bfPhaseAtMs;
+    int left=(s.bfPhaseAtMs && el<cfg::BACKFLUSH_ARM_MS)
+             ? (int)((cfg::BACKFLUSH_ARM_MS-el+999)/1000) : 0;
+    g_can.fillSmoothCircle(cx,cy,r+2,LM_RED);
+    g_can.fillSmoothCircle(cx,cy,r-1,FACE());
+    char b[4]; snprintf(b,sizeof b,"%d",left);
+    g_can.setFont(&F_NUM_MD); g_can.setTextColor(LM_RED);
+    g_can.setTextDatum(middle_center);
+    if (left) g_can.drawString(b,cx,cy);
+    else      droplet(cx,cy+5,7,LM_RED);              // grace: waiting on cloud
+    label="PADDLE"; labelCol=LM_RED;
+  } else if (s.backflush==BF::Cleaning){
+    g_can.fillSmoothCircle(cx,cy,r+2,LM_RED);
+    droplet(cx-8,cy+7,6,PAPER); droplet(cx+8,cy+7,6,PAPER); droplet(cx,cy-1,5,PAPER);
+    label = s.machine==lmcloud::MachineStatus::Brewing?"FLUSHING":"CLEANING";
+    labelCol=LM_RED;
+  } else {
+    uint16_t ink = on ? FG() : INK_40;
+    g_can.fillSmoothCircle(cx,cy,r+2,on?BRASS:BG_LO());
+    g_can.fillSmoothCircle(cx,cy,r,  FACE());
+    droplet(cx-8,cy+8,5.5f,ink); droplet(cx+8,cy+8,5.5f,ink); droplet(cx,cy+1,7,ink);
+    if (on) labelCol=FG();
+  }
+  tracked(cx,cy+r+14,label,2,labelCol,&F_LABEL_SM,middle_center);
+  // big hit-rect: the whole column right of the dial
+  if (on && s.backflush==BF::Off)
+    g_btns.push_back({236,44,W-236,120,[]{ lmcloud::startBackflush(); }});
+}
+
 static void homeTally(const lmcloud::State& s){
   const int cx=W/2, cy=106, r=66;
   bezel(cx,cy,r,FACE());
@@ -357,7 +401,7 @@ static void renderHome(const lmcloud::State& s){
   switch(g_homePage){
     case 1:  homeTally(s);            break;
     case 2:  homeClock(s);            break;
-    default: homeDial(s,on,temp,cstat);
+    default: homeDial(s,on,temp,cstat); flushButton(s,on);
   }
 
   // ── infoline + page dots (the dots double as the divider) ──
