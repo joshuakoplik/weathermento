@@ -106,8 +106,11 @@ static bool scanForMachine() {
   return ok;
 }
 
+// Search the already-discovered services. Do NOT pass refresh=true here:
+// rediscovery deletes and recreates every service/characteristic object, so a
+// pointer from an earlier lookup would dangle (that crashed in writeValue).
 static NimBLERemoteCharacteristic* findChar(const char* uuid) {
-  for (auto* svc : g_client->getServices(true)) {
+  for (auto* svc : g_client->getServices(false)) {
     if (auto* c = svc->getCharacteristic(uuid)) return c;
   }
   return nullptr;
@@ -143,6 +146,8 @@ static uint32_t session() {
   }
   s_connFails = 0;
 
+  g_client->getServices(true);                 // discover once per connection
+  Serial.printf("[ble] connected, rssi %d\n", g_client->getRssi());
   NimBLERemoteCharacteristic* auth = findChar(AUTH_CHAR);
   NimBLERemoteCharacteristic* shot = findChar(SHOT_CHAR);
   if (!auth) { Serial.println("[ble] no auth characteristic"); g_client->disconnect(); return 60000; }
