@@ -1170,7 +1170,10 @@ void tick(){
       (g_scr==Screen::Home || g_scr==Screen::Controls || g_scr==Screen::Stats) &&
       lmcloud::state().backflush==lmcloud::BackflushStatus::Off &&
       !lmcloud::state().bfStarting &&
-      now-g_lastActivity > (uint32_t)settings.wxIdleSec*1000){
+      // fresh millis(), not `now`: a tap handler above may have just set
+      // g_lastActivity later than `now`, and the unsigned difference would
+      // wrap to ~49 days and bounce straight back to weather
+      millis()-g_lastActivity > (uint32_t)settings.wxIdleSec*1000){
     goWeather();
   }
   if (g_scr==Screen::Weather && weather::version()!=g_wxVer) g_dirty=true;
