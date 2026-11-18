@@ -104,6 +104,11 @@ static void goToSleep(){
 struct Btn { int x,y,w,h; std::function<void()> tap; };
 static std::vector<Btn> g_btns;
 
+static void goWeather(){ g_scr=Screen::Weather; g_ctrlScroll=0; g_homePage=0; g_dirty=true; }
+// Tapping the header strip (wordmark / clock) is a shortcut back to weather
+// from the coffee screens.
+static void headerToWeather(){ g_btns.push_back({0,0,W,30,goWeather}); }
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 static int64_t epochMs() {
   struct timeval tv; gettimeofday(&tv,nullptr);
@@ -378,7 +383,9 @@ static void renderHome(const lmcloud::State& s){
     { on?"STANDBY":"WAKE", [on]{ lmcloud::setPower(!on); } },
     { "MACHINE", []{ g_scr=Screen::Controls; g_ctrlScroll=0; g_dirty=true; } },
     { "STATS",   []{ g_scr=Screen::Stats;    g_ctrlScroll=0; g_dirty=true; } },
+    { "WEATHER", goWeather },
   });
+  headerToWeather();
 }
 
 // ── WEATHER — the idle screen ────────────────────────────────────────────────
@@ -772,6 +779,7 @@ static void renderControls(const lmcloud::State& s){
     g_can.fillSmoothRoundRect(W-6,thY,3,thH,1,BRASS);
   }
   keys({{ "BACK", []{ g_scr=Screen::Home; g_ctrlScroll=0; g_dirty=true; } }});
+  headerToWeather();
 }
 
 // ── STATS — read-only scrollable list ────────────────────────────────────────
@@ -829,6 +837,7 @@ static void renderStats(const lmcloud::State& s){
     { "BACK",  []{ g_scr=Screen::Home;     g_ctrlScroll=0; g_dirty=true; } },
     { "SETUP", []{ g_scr=Screen::Settings; g_ctrlScroll=0; g_dirty=true; } },
   });
+  headerToWeather();
 }
 
 // ── SETTINGS ─────────────────────────────────────────────────────────────────
@@ -1103,7 +1112,7 @@ void tick(){
       (g_scr==Screen::Home || g_scr==Screen::Controls || g_scr==Screen::Stats) &&
       lmcloud::state().backflush==lmcloud::BackflushStatus::Off &&
       now-g_lastActivity > (uint32_t)settings.wxIdleSec*1000){
-    g_scr=Screen::Weather; g_ctrlScroll=0; g_homePage=0; g_dirty=true;
+    goWeather();
   }
   if (g_scr==Screen::Weather && weather::version()!=g_wxVer) g_dirty=true;
 
