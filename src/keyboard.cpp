@@ -51,11 +51,28 @@ bool keyboardPrompt(M5GFX& d,const char* title,String& value,bool mask){
     for(auto&k:keys) drawKey(d,k);
   };
   layout(); draw();
+  // Touch-down highlights the key under the finger and the highlight follows
+  // it; the key is typed on lift. Slide to correct a near miss before letting go.
+  auto hit=[&](int x,int y)->int{
+    for(size_t i=0;i<keys.size();++i){ auto&k=keys[i];
+      if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h) return (int)i; }
+    return -1;
+  };
+  int cur=-1;
   for(;;){
     M5.update(); auto t=M5.Touch.getDetail();
-    if(t.wasPressed()) for(auto&k:keys)
-      if(t.x>=k.x&&t.x<k.x+k.w&&t.y>=k.y&&t.y<k.y+k.h){
-        drawKey(d,k,true); M5.Speaker.tone(2200,12); delay(60); drawKey(d,k,false);
+    if(t.wasPressed()||t.isPressed()){
+      int h=hit(t.x,t.y);
+      if(h!=cur){
+        if(cur>=0) drawKey(d,keys[cur],false);
+        cur=h;
+        if(cur>=0) drawKey(d,keys[cur],true);
+      }
+    }
+    if(t.wasReleased() && cur>=0){
+      Key k=keys[cur]; cur=-1;
+      drawKey(d,k,false); M5.Speaker.tone(2200,12);
+      {
         if(k.lab){
           if(!strcmp(k.lab,"abc")){ layer=(layer==0)?1:0; layout(); draw(); }
           else if(!strcmp(k.lab,"?12")){ layer=(layer<2)?2:(layer==2)?3:0; layout(); draw(); }
@@ -63,8 +80,8 @@ bool keyboardPrompt(M5GFX& d,const char* title,String& value,bool mask){
           else if(!strcmp(k.lab,"OK")){ value=buf; return true; }
           else if(!strcmp(k.lab,"cancel")) return false;
         } else { buf+=k.ch; draw(); }
-        break;
       }
+    }
     delay(8);
   }
 }

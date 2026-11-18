@@ -40,12 +40,14 @@ void setup() {
 
 void loop() {
   // serial debug shell: '0'..'9' force screen ('9'=weather) ('1'→brewing@24.7s), 's' screenshot,
-  // 'b' arm backflush (same as tapping START)
+  // 'b' arm backflush (same as tapping START), 'w' forget weather location
   while (Serial.available()) {
     int c=Serial.read();
     if (c>='0'&&c<='9') ui::debugScreen(c-'0', c=='1'?24.7f:0);
     else if (c=='d'||c=='l') ui::setDark(c=='d');
     else if (c=='b') lmcloud::startBackflush();
+    else if (c=='w') { settings.wxHasLoc=false; settings.wxCity=""; settings.save();
+                       Serial.println("[wx] location cleared"); }
     else if (c=='s') { vTaskSuspend(g_cloudTask); ui::screenshot(); vTaskResume(g_cloudTask); }
   }
   ui::tick();

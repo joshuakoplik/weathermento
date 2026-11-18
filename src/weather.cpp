@@ -7,6 +7,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <esp_system.h>
 
 namespace weather {
 
@@ -19,6 +20,16 @@ static SemaphoreHandle_t g_mtx;
 static volatile uint32_t g_ver = 0;
 static TaskHandle_t      g_task;
 
+// Crash-loop guard. RTC slow memory survives a panic reboot but not a power
+// cycle; the magic word tells the two apart. Two crash-reboots in a row pause
+// fetching (and so the weather screen's data path) for that boot, so a bad
+// response or bug can never brick the device into a reboot loop.
+RTC_NOINIT_ATTR static uint32_t s_rtcMagic;
+RTC_NOINIT_ATTR static uint32_t s_rtcCrashes;
+static constexpr uint32_t RTC_MAGIC = 0x57454154;   // "WEAT"
+static volatile bool g_paused = false;
+bool paused() { return g_paused; }
+
 Snapshot snapshot() {
   xSemaphoreTake(g_mtx, portMAX_DELAY);
   Snapshot s = g_snap;
@@ -26,7 +37,7 @@ Snapshot snapshot() {
   return s;
 }
 uint32_t version() { return g_ver; }
-void refresh() { if (g_task) xTaskNotifyGive(g_task); }
+void refresh() { g_paused = false; if (g_task) xTaskNotifyGive(g_task); }
 
 static void setError(const String& e) {
   xSemaphoreTake(g_mtx, portMAX_DELAY);
@@ -143,6 +154,8 @@ static void task(void*) {
   bool     lastF  = settings.fahrenheit;
   for (;;) {
     if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000))) due = true;
+    if (s_rtcCrashes && millis() > 180000) s_rtcCrashes = 0;   // 3 min stable
+    if (g_paused) continue;
     if (settings.fahrenheit != lastF) { lastF = settings.fahrenheit; due = true; }
     if (!due && (int32_t)(millis() - nextAt) >= 0) due = true;
     if (!due) continue;
@@ -157,6 +170,17 @@ static void task(void*) {
 
 void begin() {
   g_mtx = xSemaphoreCreateMutex();
+  esp_reset_reason_t r = esp_reset_reason();
+  bool crashed = r == ESP_RST_PANIC || r == ESP_RST_INT_WDT ||
+                 r == ESP_RST_TASK_WDT || r == ESP_RST_WDT;
+  if (s_rtcMagic != RTC_MAGIC) { s_rtcMagic = RTC_MAGIC; s_rtcCrashes = 0; }
+  s_rtcCrashes = crashed ? s_rtcCrashes + 1 : 0;
+  if (s_rtcCrashes >= 2) {
+    g_paused = true;
+    g_snap.error = "paused after a crash";
+    Serial.printf("[wx] %u crash reboots in a row (reason %d) - weather paused\n",
+                  (unsigned)s_rtcCrashes, (int)r);
+  }
   // Low priority, core 0 alongside lmcloud — a slow fetch never stalls the UI.
   xTaskCreatePinnedToCore(task, "weather", 16 * 1024, nullptr, 1, &g_task, 0);
 }
@@ -167,19 +191,21 @@ static bool startsWithCI(const String& hay, const String& needle) {
   return hay.substring(0, needle.length()).equalsIgnoreCase(needle);
 }
 
-bool geocode(const String& query, String& name, float& lat, float& lon, String& err) {
+int search(const String& query, Place* out, int max, String& err) {
   String q = query; q.trim();
-  if (q.isEmpty()) { err = "empty"; return false; }
+  if (q.length() < 2) { err = "too short"; return 0; }
 
   // "45.52, -122.68" — take coordinates verbatim.
   float a, b; char tail;
   if (sscanf(q.c_str(), "%f , %f %c", &a, &b, &tail) == 2 &&
       a >= -90 && a <= 90 && b >= -180 && b <= 180) {
-    lat = a; lon = b; name = q; return true;
+    out[0].name = q; out[0].detail = "coordinates"; out[0].lat = a; out[0].lon = b;
+    return 1;
   }
 
-  // "Portland, Oregon" / "Paris, FR" — Open-Meteo matches the place name only,
-  // so search on the part before the comma and use the rest to pick a result.
+  // "Portland, Oregon" / "Paris, FR" — Open-Meteo matches the place name (or
+  // postal code) only, so search on the part before the comma and use the rest
+  // to float matching results to the top.
   String place = q, qual;
   int comma = q.indexOf(',');
   if (comma >= 0) { place = q.substring(0, comma); qual = q.substring(comma + 1); }
@@ -188,26 +214,38 @@ bool geocode(const String& query, String& name, float& lat, float& lon, String& 
   String body;
   String url = "https://geocoding-api.open-meteo.com/v1/search?count=10&language=en&format=json&name="
                + urlEncode(place);
-  if (!httpGet(url, body, err)) return false;
+  if (!httpGet(url, body, err)) return 0;
 
   JsonDocument doc;
-  if (deserializeJson(doc, body)) { err = "bad reply"; return false; }
+  if (deserializeJson(doc, body)) { err = "bad reply"; return 0; }
   JsonArrayConst res = doc["results"];
-  if (res.isNull() || res.size() == 0) { err = "not found"; return false; }
+  if (res.isNull() || res.size() == 0) { err = "no match for \"" + place + "\""; return 0; }
 
-  JsonObjectConst pick = res[0];
-  if (!qual.isEmpty()) {
+  auto matches = [&](JsonObjectConst r) {
+    return !qual.isEmpty() &&
+           (startsWithCI(r["admin1"] | "", qual) || startsWithCI(r["country"] | "", qual) ||
+            qual.equalsIgnoreCase(r["country_code"] | ""));
+  };
+  int n = 0;
+  for (int pass = 0; pass < 2 && n < max; ++pass) {     // qualifier matches first
     for (JsonObjectConst r : res) {
-      if (startsWithCI(r["admin1"] | "", qual) || startsWithCI(r["country"] | "", qual) ||
-          qual.equalsIgnoreCase(r["country_code"] | "")) { pick = r; break; }
+      if (n >= max) break;
+      if (!qual.isEmpty() && matches(r) != (pass == 0)) continue;
+      if (qual.isEmpty() && pass == 1) break;
+      Place& p = out[n++];
+      const char* nm = r["name"] | "";
+      const char* a1 = r["admin1"] | "";
+      const char* co = r["country"] | "";
+      p.lat  = r["latitude"]  | 0.f;
+      p.lon  = r["longitude"] | 0.f;
+      p.name = nm;
+      const char* region = *a1 ? a1 : co;
+      if (*region && strcmp(region, nm)) { p.name += ", "; p.name += region; }
+      p.detail = a1;
+      if (*co) { if (p.detail.length()) p.detail += ", "; p.detail += co; }
     }
   }
-  lat = pick["latitude"]  | 0.f;
-  lon = pick["longitude"] | 0.f;
-  name = (const char*)(pick["name"] | "");
-  const char* region = pick["admin1"] | (const char*)(pick["country"] | "");
-  if (*region && strcmp(region, name.c_str())) { name += ", "; name += region; }
-  return true;
+  return n;
 }
 
 // ── WMO codes ────────────────────────────────────────────────────────────────

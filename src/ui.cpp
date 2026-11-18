@@ -461,13 +461,51 @@ static void wxBigTemp(int cx,int cy,float v){
   ring(cx+tw/2+7, cy-16, 4,2, FG(), BG());
 }
 
+// Fonts are ASCII-only: fold UTF-8 Latin-1 letters (é, ü, ã …) to their base
+// letter and drop anything else outside printable ASCII. Upper-cases.
 static String asciiUpper(const String& in, size_t maxLen){
+  // U+00C0…U+00FF, upper-cased
+  static const char FOLD[] = "AAAAAAACEEEEIIIIDNOOOOOXOUUUUYTSAAAAAAACEEEEIIIIDNOOOOO/OUUUUYTY";
   String o;
   for(size_t i=0;i<in.length() && o.length()<maxLen;++i){
-    char c=in[i];
-    if ((uint8_t)c>=32 && (uint8_t)c<127) o += (char)toupper(c);
+    uint8_t c=(uint8_t)in[i];
+    if (c>=32 && c<127) { o += (char)toupper(c); continue; }
+    if (c==0xC3 && i+1<in.length()){
+      uint8_t c2=(uint8_t)in[i+1];
+      if (c2>=0x80 && c2<=0xBF){ o += FOLD[c2-0x80]; ++i; continue; }
+    }
+    if ((c&0xE0)==0xC0) i+=1; else if ((c&0xF0)==0xE0) i+=2; else if ((c&0xF8)==0xF0) i+=3;
   }
   return o;
+}
+
+// Modal list of geocoding matches. Returns the tapped index, or -1 on cancel.
+static int pickPlace(const weather::Place* p,int n){
+  const int top=34, rowH=33;
+  g_can.fillScreen(BG()); vignette();
+  tracked(W/2,14,"WHICH ONE?",4,FG(),&F_LABEL,top_center);
+  g_can.drawFastHLine(12,top-4,W-24,BRASS);
+  for(int i=0;i<n;++i){
+    int y=top+i*rowH;
+    tracked(18,y+10,asciiUpper(p[i].name,30).c_str(),1,FG(),&F_LABEL_SM,middle_left);
+    tracked(18,y+24,asciiUpper(p[i].detail,40).c_str(),1,INK_40,&F_LABEL_SM,middle_left);
+    g_can.drawFastHLine(12,y+rowH-1,W-24,BG_LO());
+  }
+  uint16_t line=g_dark?INK_40:BRASS;
+  g_can.drawFastHLine(0,KEY_Y,W,line);
+  tracked(W/2,KEY_Y+KEY_H/2,"CANCEL",1,FG(),&F_LABEL,middle_center);
+  g_can.pushSprite(0,0);
+  int sx=0, sy=0;
+  for(;;){
+    M5.update(); auto t=M5.Touch.getDetail();
+    if (t.wasPressed()){ sx=t.x; sy=t.y; }
+    if (t.wasReleased() && abs(t.x-sx)<20 && abs(t.y-sy)<20){
+      if (t.y>=KEY_Y){ M5.Speaker.tone(2200,18); return -1; }
+      int i=(t.y-top)/rowH;
+      if (t.y>=top && i>=0 && i<n){ M5.Speaker.tone(2200,18); return i; }
+    }
+    delay(8);
+  }
 }
 
 static void renderWeather(const lmcloud::State& s){
@@ -833,18 +871,23 @@ static void renderSettings(){
     g_dirty=true;
   }); y+=36;
   settingRow(y,"weather", settings.wxHasLoc?settings.wxCity:String("tap to set"), false, []{
-    String q = settings.wxCity;
-    if (!keyboardPrompt(M5.Display,"City  (e.g. Portland, Oregon)",q) || q.isEmpty()){ g_dirty=true; return; }
+    String q;                                  // start empty — no long string to delete
+    if (!keyboardPrompt(M5.Display,"City or ZIP  (e.g. Portland, OR)",q) || q.isEmpty()){ g_dirty=true; return; }
     splash("finding city ...");
-    String name, err; float lat, lon;
-    if (weather::geocode(q,name,lat,lon,err)){
-      settings.wxCity=name; settings.wxLat=lat; settings.wxLon=lon; settings.wxHasLoc=true;
-      settings.save();
-      weather::refresh();
-      splash(name.c_str()); delay(1200);
+    static weather::Place found[5];
+    String err;
+    int n = weather::search(q,found,5,err);
+    if (n<=0){
+      String m = "couldn't find: " + err;
+      splash(m.c_str()); delay(2500);
     } else {
-      String m = "couldn't find city: " + err;
-      splash(m.c_str()); delay(2000);
+      int i = pickPlace(found,n);
+      if (i>=0){
+        settings.wxCity=found[i].name; settings.wxLat=found[i].lat; settings.wxLon=found[i].lon;
+        settings.wxHasLoc=true;
+        settings.save();
+        weather::refresh();
+      }
     }
     g_dirty=true;
   }); y+=36;

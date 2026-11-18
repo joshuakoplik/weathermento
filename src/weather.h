@@ -33,9 +33,19 @@ Snapshot snapshot();           // thread-safe copy
 uint32_t version();            // bumps on every new snapshot — cheap change check
 void     refresh();            // fetch now (location or unit changed)
 
-// Blocking city lookup via Open-Meteo geocoding. On success fills a display
-// name ("Portland, Oregon") and coordinates. Call from the UI thread.
-bool geocode(const String& query, String& name, float& lat, float& lon, String& err);
+// Blocking place search via Open-Meteo geocoding (city name or postal code;
+// "lat, lon" is taken verbatim). Fills up to `max` candidates, best first —
+// the UI lets the user pick, so a fuzzy match never silently wins.
+struct Place {
+  String name;      // "Portland, Oregon" — what we store and show
+  String detail;    // "Oregon, United States" — disambiguation line
+  float  lat = 0, lon = 0;
+};
+int search(const String& query, Place* out, int max, String& err);
+
+// True when weather fetching is paused because the device crash-rebooted
+// repeatedly (see begin()). Setting a new city clears it.
+bool paused();
 
 // WMO code → short caps label / icon family.
 const char* codeLabel(int code);
