@@ -11,6 +11,7 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <sys/time.h>
 
 namespace lmcloud {
 
@@ -195,9 +196,20 @@ static void applyWidgets(JsonArrayConst widgets) {
   }
 }
 
-static void applyDashboard(JsonDocument& doc) {
+static const char* machineName(MachineStatus m) {
+  switch (m) { case MachineStatus::Off: return "Off"; case MachineStatus::StandBy: return "StandBy";
+               case MachineStatus::PoweredOn: return "On"; case MachineStatus::Brewing: return "Brewing";
+               default: return "Unknown"; }
+}
+static int64_t nowEpochMs() {
+  struct timeval tv; gettimeofday(&tv, nullptr);
+  return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
+static void applyDashboard(JsonDocument& doc, const char* src) {
   StateLock _l;
   auto prevM = g_state.machine;
+  int64_t prevStart = g_state.brewingStartMs, prevShotAt = g_state.lastShotAtMs;
   g_state.modelName = doc["modelName"] | g_state.modelName;
   g_state.serial    = doc["serialNumber"] | g_state.serial;
   if (!doc["widgets"].isNull()) applyWidgets(doc["widgets"].as<JsonArrayConst>());
@@ -211,9 +223,21 @@ static void applyDashboard(JsonDocument& doc) {
     if (mine || bad) Serial.printf("[lm] command %.8s %s %s\n", id, st, ec);
     if (mine && bad) bfFail(*ec ? String(ec) : String(st));
   }
-  if (g_state.machine != prevM)
-    Serial.printf("[lm] machine %d -> %d (brewStart=%lld)\n",
-                  (int)prevM, (int)g_state.machine, (long long)g_state.brewingStartMs);
+  // Shot diagnostics: every brewing-related change, where it came from, and
+  // how long after the event the update reached us (cloud stamps are epoch ms).
+  int64_t now = nowEpochMs();
+  if (g_state.machine != prevM || g_state.brewingStartMs != prevStart) {
+    if (g_state.brewingStartMs)
+      Serial.printf("[shot] %s: %s -> %s, brew started %.1fs ago\n", src,
+                    machineName(prevM), machineName(g_state.machine),
+                    (now - g_state.brewingStartMs) / 1000.0);
+    else
+      Serial.printf("[shot] %s: %s -> %s (no brew start)\n", src,
+                    machineName(prevM), machineName(g_state.machine));
+  }
+  if (g_state.lastShotAtMs != prevShotAt && g_state.lastShotAtMs)
+    Serial.printf("[shot] %s: last coffee %.1fs, logged %.1fs ago\n", src,
+                  g_state.lastShotSec, (now - g_state.lastShotAtMs) / 1000.0);
   changed();
 }
 
@@ -292,7 +316,7 @@ static void pollDashboard() {
   JsonDocument resp;
   int code = httpJson("GET", "/things/" + settings.lmSerial + "/dashboard", "", &resp, true);
   Serial.printf("[lm] /dashboard -> %d (heap=%u)\n", code, ESP.getFreeHeap());
-  if (code == 200) applyDashboard(resp);
+  if (code == 200) applyDashboard(resp, "poll");
 }
 
 static void discoverSerial() {
@@ -554,7 +578,7 @@ static void onWsEvent(WStype_t t, uint8_t* p, size_t n) {
         Serial.printf("[ws] MESSAGE %u bytes\n", (unsigned)bodyLen);
         JsonDocument doc;
         if (deserializeJson(doc, body, bodyLen) == DeserializationError::Ok)
-          applyDashboard(doc);
+          applyDashboard(doc, "ws");
       } else if (verbLen == 5 && !memcmp(frame, "ERROR", 5)) {
         Serial.printf("[ws] STOMP ERROR: %.*s\n", (int)min(n,(size_t)300), frame);
       } else {

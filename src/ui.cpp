@@ -1039,6 +1039,15 @@ static void render(){
       g_shotHoldUntil=0; g_scr=g_brewFromWx?Screen::Weather:Screen::Home;
     }
   }
+  { // shot diagnostics: log when the timer screen comes and goes
+    static bool s_wasBrew=false;
+    bool isBrew = (g_scr==Screen::Brewing);
+    if (isBrew!=s_wasBrew){
+      if (isBrew) Serial.println("[ui] timer on");
+      else Serial.printf("[ui] timer off (hold showed %.1fs)\n", g_shotHold);
+      s_wasBrew=isBrew;
+    }
+  }
   switch(g_scr){
     case Screen::Home:     renderHome(s);     break;
     case Screen::Brewing:  renderBrewing(s);  break;
