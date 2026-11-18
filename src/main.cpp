@@ -17,13 +17,44 @@ static void cloudTask(void*) {
   for (;;) { lmcloud::loop(); vTaskDelay(pdMS_TO_TICKS(10)); }
 }
 
+// Free the Core2's internal I2C bus (SDA 21 / SCL 22: AXP192 PMIC, FT6336
+// touch, RTC, IMU) before M5.begin(). The upload tool's RTS reset restarts only
+// the ESP32; if it lands mid-transfer a slave can be left driving SDA low.
+// M5GFX then can't read the AXP192, fails to recognise the Core2 and never
+// brings up the panel or touch (black screen, backlight on, until a power
+// cycle). Standard recovery: clock SCL until SDA is released, then a STOP.
+static void i2cBusRecover(int sda = 21, int scl = 22) {
+  pinMode(sda, INPUT_PULLUP);
+  pinMode(scl, OUTPUT_OPEN_DRAIN);
+  digitalWrite(scl, HIGH);
+  delayMicroseconds(10);
+  int pulses = 0;
+  for (; pulses < 9 && digitalRead(sda) == LOW; ++pulses) {
+    digitalWrite(scl, LOW);  delayMicroseconds(10);
+    digitalWrite(scl, HIGH); delayMicroseconds(10);
+  }
+  // STOP: SDA low → high while SCL is high
+  pinMode(sda, OUTPUT_OPEN_DRAIN);
+  digitalWrite(sda, LOW);  delayMicroseconds(10);
+  digitalWrite(scl, HIGH); delayMicroseconds(10);
+  digitalWrite(sda, HIGH); delayMicroseconds(10);
+  pinMode(sda, INPUT); pinMode(scl, INPUT);
+  if (pulses) Serial.printf("[boot] I2C bus was stuck; freed after %d clocks\n", pulses);
+}
+
 void setup() {
+  Serial.begin(115200);
+  i2cBusRecover();
   auto c = M5.config();
   c.internal_spk    = true;
   c.internal_mic    = false;   // never configure the PDM mic (no audio input used)
   c.serial_baudrate = 115200;
+  c.fallback_board  = m5::board_t::board_M5StackCore2;   // if autodetect comes up empty
   M5.begin(c);
   M5.Mic.end();                // belt and braces: make sure the mic driver is stopped
+  Serial.printf("[boot] reset reason %d, board %d (Core2 = %d)\n",
+                (int)esp_reset_reason(), (int)M5.getBoard(),
+                (int)m5::board_t::board_M5StackCore2);
 
   settings.load();
   ui::begin();
