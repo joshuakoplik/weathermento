@@ -22,6 +22,12 @@ struct Settings {
   bool    rotFlipped = false; // FIXED mode: upside-down
   int8_t  rotRefAxis = -1;    // learned: accel axis that reads gravity when upright
   int8_t  rotRefSign = 0;     //   (0 = x, 1 = y; -1 = not learned yet) and its sign
+  // Bluetooth link to the machine (shot counter, live temps)
+  bool    bleEnabled = true;
+  String  bleToken;           // bleAuthToken from the cloud's /things (cached so
+                              // BLE works even when LM's cloud is down)
+  String  bleAddr;            // machine's BLE address once found by scanning
+  uint8_t bleAddrType = 0;
   // crypto material — generated once, never shown
   String  instId;          // lowercase uuid
   uint8_t ecPriv[32];      // P-256 private scalar (raw big-endian)

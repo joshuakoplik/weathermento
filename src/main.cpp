@@ -6,6 +6,7 @@
 #include "ui.h"
 #include "weather.h"
 #include "netlock.h"
+#include "lm_ble.h"
 
 // The UI loop runs the Setup → weather city lookup (HTTPS + JSON) inline; the
 // Arduino default 8 KB loopTask stack overflows during the TLS handshake.
@@ -101,6 +102,7 @@ void setup() {
   // Network/cloud on core 0; UI/touch stays on core 1 (Arduino loop).
   xTaskCreatePinnedToCore(cloudTask, "lmcloud", 12*1024, nullptr, 2, &g_cloudTask, 0);
   weather::begin();                         // own task; waits for WiFi + a city
+  lmble::begin();                           // Bluetooth shot counter (own task)
 }
 
 void loop() {

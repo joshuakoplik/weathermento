@@ -45,6 +45,8 @@ src/
   keyboard.*      modal touchscreen QWERTY
   ui.*            screens (Weather / Home / Brewing / Controls / Settings / Stats)
   weather.*       Open-Meteo forecast + geocoding client (own task, core 0)
+  lm_ble.*        Bluetooth shot counter + telemetry (NimBLE, own task)
+  iram_trim.cpp   frees IRAM so WiFi + TLS + Bluetooth fit (see comment)
   wx_ca.h         root CAs for the weather APIs
   main.cpp        boot + FreeRTOS task split (cloud on core 0, UI on core 1)
 tools/            font generator, version stamp, serial monitor, screenshot

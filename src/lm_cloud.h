@@ -67,6 +67,11 @@ struct State {
   uint32_t      bfStartAtMs  = 0;
   String        bfError;                         // last failure, "" = none
   uint32_t      bfErrorAtMs  = 0;
+  // Bluetooth shot counter. While bleLive, BLE owns the brewing state and the
+  // cloud's (often late) brewing pushes are ignored.
+  bool          bleLive       = false;
+  float         coffeeTempNow = 0, steamTempNow = 0;   // live boiler temps (BLE)
+  uint32_t      flushEndedAtMs = 0;              // millis() of last flush (not a shot)
   std::vector<Firmware>  firmwares;
   std::vector<WakeSched> schedules;
   // misc
@@ -94,6 +99,13 @@ bool setPreBrew(bool on);                 // compat wrapper → setPreMode
 bool setPreBrewTimes(float secIn, float secOut);
 bool setSmartStandby(bool enabled, int minutes, bool afterLastBrew);
 bool startBackflush();
+
+// Bluetooth → state (called from the BLE task)
+enum class BleEvent : uint8_t { BrewStart, BrewTick, BrewStop, FlushStop, Backflushing,
+                                CoffeeTemp, SteamTemp, ModeOn, ModeStandby };
+void bleEvent(BleEvent e, float v = 0);
+void setBleLive(bool live);
+void requestThings();               // re-fetch /things (e.g. BLE token rejected)
 
 // Connectivity nudges
 void reconnect();                   // drop everything and re-auth (after creds edit)

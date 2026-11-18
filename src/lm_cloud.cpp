@@ -4,6 +4,7 @@
 #include "config.h"
 #include "lm_ca.h"
 #include "netlock.h"
+#include "lm_ble.h"
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -124,11 +125,21 @@ static void applyWidgets(JsonArrayConst widgets) {
     const char* code = w["code"] | "";
     JsonObjectConst o = w["output"];
     if (!strcmp(code, "CMMachineStatus")) {
-      g_state.machine        = parseMachine(o["status"] | "");
-      g_state.brewingStartMs = o["brewingStartTime"].isNull() ? 0
-                               : (int64_t)(o["brewingStartTime"].as<double>());
+      MachineStatus ms = parseMachine(o["status"] | "");
+      if (g_state.bleLive) {
+        // BLE reports brewing instantly; the cloud's version arrives late or not
+        // at all. Let the cloud move power state only, never start/stop a shot.
+        if (ms == MachineStatus::Brewing) ms = (g_state.machine == MachineStatus::Brewing)
+                                               ? MachineStatus::Brewing : MachineStatus::PoweredOn;
+        else if (g_state.machine == MachineStatus::Brewing) ms = MachineStatus::Brewing;
+        g_state.machine = ms;
+      } else {
+        g_state.machine        = ms;
+        g_state.brewingStartMs = o["brewingStartTime"].isNull() ? 0
+                                 : (int64_t)(o["brewingStartTime"].as<double>());
+      }
       JsonObjectConst lc = o["lastCoffee"];
-      if (!lc.isNull()) {
+      if (!lc.isNull() && !g_state.bleLive) {
         g_state.lastShotSec  = lc["extractionSeconds"] | g_state.lastShotSec;
         g_state.lastShotAtMs = lc["time"].isNull() ? g_state.lastShotAtMs
                                : (int64_t)(lc["time"].as<double>());
@@ -319,19 +330,96 @@ static void pollDashboard() {
   if (code == 200) applyDashboard(resp, "poll");
 }
 
+// /things: serial auto-discovery (first boot) and the machine's bleAuthToken,
+// which the Bluetooth link needs. Runs after every sign-in.
+static volatile bool g_wantThings = false;
+void requestThings() { g_wantThings = true; }
 static void discoverSerial() {
-  if (!settings.lmSerial.isEmpty()) return;
   JsonDocument resp;
   int code = httpJson("GET", "/things", "", &resp, true);
   Serial.printf("[lm] /things -> %d\n", code);
   if (code != 200) return;
   JsonArrayConst arr = resp.as<JsonArrayConst>();
   if (arr.isNull() || arr.size() == 0) return;
-  const char* sn = arr[0]["serialNumber"] | "";
-  if (!*sn) return;
-  settings.lmSerial = sn; settings.save();
-  g_state.serial = sn;
-  Serial.printf("[lm] auto-discovered serial %s\n", sn);
+  JsonObjectConst thing = arr[0];
+  if (!settings.lmSerial.isEmpty())
+    for (JsonObjectConst t : arr)
+      if (settings.lmSerial == (const char*)(t["serialNumber"] | "")) { thing = t; break; }
+  bool dirty = false;
+  const char* sn = thing["serialNumber"] | "";
+  if (settings.lmSerial.isEmpty() && *sn) {
+    settings.lmSerial = sn; g_state.serial = sn; dirty = true;
+    Serial.printf("[lm] auto-discovered serial %s\n", sn);
+  }
+  const char* tok = thing["bleAuthToken"] | "";
+  if (*tok && settings.bleToken != tok) {
+    settings.bleToken = tok; dirty = true;
+    Serial.println("[lm] got Bluetooth token");
+  } else if (!*tok) {
+    Serial.println("[lm] /things has no bleAuthToken for this machine");
+  }
+  if (dirty) settings.save();
+}
+
+// ── Bluetooth → state ────────────────────────────────────────────────────────
+static int64_t epochNowMs() {
+  struct timeval tv; gettimeofday(&tv, nullptr);
+  return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+void setBleLive(bool live) {
+  StateLock _l;
+  if (g_state.bleLive == live) return;
+  g_state.bleLive = live;
+  if (!live && g_state.machine == MachineStatus::Brewing) {
+    // lost mid-shot: hand back to the cloud rather than freeze on the timer
+    g_state.machine = MachineStatus::PoweredOn; g_state.brewingStartMs = 0;
+  }
+  Serial.printf("[ble] shot counter %s\n", live ? "live" : "lost");
+  changed();
+}
+void bleEvent(BleEvent e, float v) {
+  StateLock _l;
+  int64_t now = epochNowMs();
+  switch (e) {
+    case BleEvent::BrewStart:
+      g_state.machine = MachineStatus::Brewing;
+      g_state.brewingStartMs = now;
+      Serial.println("[shot] ble: brew started");
+      break;
+    case BleEvent::BrewTick: {
+      // the machine's own timer; notifications are only ever late, so the
+      // earliest implied start is the best estimate
+      int64_t start = now - (int64_t)(v * 1000);
+      if (g_state.machine != MachineStatus::Brewing || !g_state.brewingStartMs ||
+          start < g_state.brewingStartMs) g_state.brewingStartMs = start;
+      g_state.machine = MachineStatus::Brewing;
+      break; }
+    case BleEvent::BrewStop:
+      if (v > 0) { g_state.lastShotSec = v; g_state.lastShotAtMs = now; }   // before
+      g_state.brewingStartMs = 0;                                            // leaving
+      g_state.machine = MachineStatus::PoweredOn;                            // Brewing
+      Serial.printf("[shot] ble: brew stopped %.1fs\n", v);
+      break;
+    case BleEvent::FlushStop:
+      g_state.brewingStartMs = 0;
+      g_state.machine = MachineStatus::PoweredOn;
+      g_state.flushEndedAtMs = millis();
+      Serial.printf("[shot] ble: flush %.1fs (not a shot)\n", v);
+      break;
+    case BleEvent::Backflushing:
+      if (g_state.machine == MachineStatus::Brewing) g_state.machine = MachineStatus::PoweredOn;
+      g_state.brewingStartMs = 0;
+      break;
+    case BleEvent::CoffeeTemp: g_state.coffeeTempNow = v; break;
+    case BleEvent::SteamTemp:  g_state.steamTempNow  = v; break;
+    case BleEvent::ModeOn:
+      if (g_state.machine != MachineStatus::Brewing) g_state.machine = MachineStatus::PoweredOn;
+      break;
+    case BleEvent::ModeStandby:
+      g_state.machine = MachineStatus::StandBy; g_state.brewingStartMs = 0;
+      break;
+  }
+  changed();
 }
 
 static uint8_t dayBit(const char* d) {
@@ -681,6 +769,7 @@ void loop() {
   // Drain commands only once we can actually send them.
   QItem qi;
   while (g_q && xQueueReceive(g_q,&qi,0)==pdTRUE) execCmd(qi);
+  if (g_wantThings) { g_wantThings = false; discoverSerial(); }
   if (g_state.net < Net::AuthOk) {
     setNet(Net::AuthOk, "");
     discoverSerial();

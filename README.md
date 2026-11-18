@@ -88,6 +88,23 @@ in this build.
 Note: the web installer linked above flashes stock Strumento, not this fork —
 build from source ([BUILDING.md](BUILDING.md)).
 
+## Bluetooth shot counter (this fork)
+
+The device also connects to the machine over Bluetooth, the same way the
+official app does when it's nearby. The machine pushes shot start/stop
+instantly, tells a group flush apart from a shot, and reports live boiler
+temperatures. While the Bluetooth link is up it drives the shot timer and the
+cloud's (often late) brewing messages are ignored; everything else still uses
+the cloud. If Bluetooth isn't available, the cloud covers everything as before.
+
+- Pairing is automatic: the Bluetooth token comes from your La Marzocco
+  account, and the machine is found by scanning (`MICRA…`, `MINI…`, `LINEA…`,
+  `GS3…`).
+- Status: **Stats → bluetooth** (LIVE / SEARCHING / NOT FOUND / AUTH FAILED /
+  UNSUPPORTED). **Setup → bluetooth** turns it off.
+- The machine accepts one Bluetooth connection at a time; while the device
+  holds it, the phone app talks to the machine via the cloud instead.
+
 ## Supported machines
 
 | Machine | Status |

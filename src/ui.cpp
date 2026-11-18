@@ -20,6 +20,7 @@
 #include "fonts.h"
 #include "version.h"
 #include "weather.h"
+#include "lm_ble.h"
 #include <time.h>
 #include <sys/time.h>
 
@@ -350,7 +351,12 @@ static void homeDial(const lmcloud::State& s,bool on,float temp,
     int tw=g_can.textWidth(tbuf);
     g_can.drawString(tbuf, cx, cy-2);
     ring(cx+tw/2+6, cy-16, 3,2, INK_40, FACE());
-    tracked(cx, cy+30, boilerWord(cstat), 3, FG(), &F_LABEL, middle_center);
+    // live boiler temperature from Bluetooth while it's still coming up
+    char st[24];
+    if (s.coffeeTempNow>0 && cstat==lmcloud::BoilerStatus::HeatingUp)
+      snprintf(st,sizeof st,"%s %.0f",boilerWord(cstat),c2disp(s.coffeeTempNow));
+    else snprintf(st,sizeof st,"%s",boilerWord(cstat));
+    tracked(cx, cy+30, st, 3, FG(), &F_LABEL, middle_center);
   } else {
     tracked(cx,cy-2,
             s.machine==lmcloud::MachineStatus::StandBy?"STANDBY":"OFFLINE",
@@ -900,6 +906,11 @@ static void renderStats(const lmcloud::State& s){
           (s.lastCleanMs && (epochMs()-s.lastCleanMs)>7LL*86400000)?LM_RED:0);   y+=36;
   statRow(y,"water",         s.plumbedIn?"PLUMBED":"TANK");                   y+=36;
   statRow(y,"wifi",          String(s.wifiRssi)+" dBm");                      y+=36;
+  statRow(y,"bluetooth",     lmble::linkName(lmble::link()),
+          lmble::link()==lmble::Link::Live ? 0 : INK_40);                       y+=36;
+  if (s.coffeeTempNow>0)
+    statRow(y,"boiler now",  String(c2disp(s.coffeeTempNow),0)+" / "+
+                             String(c2disp(s.steamTempNow),0)+(settings.fahrenheit?" F":" C")); y+=(s.coffeeTempNow>0)?36:0;
   for (auto& f : s.firmwares){
     String k = f.type; k.toLowerCase(); k += " fw";
     String v = f.version; if(f.status.length()) v += "  "+f.status;
@@ -1013,6 +1024,9 @@ static void renderSettings(){
     applyRotation(!g_rotFlippedNow);
     g_dirty=true;
   }); y+=40;
+  toggleRow(y,"BLUETOOTH",settings.bleEnabled,[]{
+    settings.bleEnabled=!settings.bleEnabled; settings.save(); g_dirty=true;
+  }); y+=40;
 
   g_can.clearClipRect();
   int contentH = y - (top - g_ctrlScroll);
@@ -1040,7 +1054,12 @@ static void render(){
   auto& s=lmcloud::state();
   if (g_dbgBrewSec>=0){ /* debug: honour g_scr as set */ }
   else if (s.machine==lmcloud::MachineStatus::Brewing &&
-           s.backflush==lmcloud::BackflushStatus::Off && g_scr!=Screen::Settings){
+           s.backflush==lmcloud::BackflushStatus::Off && g_scr!=Screen::Settings &&
+           (g_scr==Screen::Brewing || !s.bleLive || !s.brewingStartMs ||
+            epochMs()-s.brewingStartMs > 2000)){
+    // With the Bluetooth shot counter the start is instant, so hold off 2 s:
+    // short group flushes (which the machine reports as flushes at the end)
+    // then never flash the timer, and a real shot appears already at "2".
     // backflush cycles pulse the pump and report Brewing — that's cleaning,
     // not a shot, so don't hijack the chronograph for it
     if (g_scr!=Screen::Brewing) g_brewFromWx = (g_scr==Screen::Weather);
@@ -1050,6 +1069,10 @@ static void render(){
            s.backflush!=lmcloud::BackflushStatus::Off){
     // a cleaning pulse leaked us onto the chronograph (backflush status landed
     // a frame late) — bail without faking a "shot ended" freeze
+    g_shotHoldUntil=0; g_scr=g_brewFromWx?Screen::Weather:Screen::Home;
+  }
+  else if (g_scr==Screen::Brewing && s.flushEndedAtMs &&
+           millis()-s.flushEndedAtMs < 3000){
     g_shotHoldUntil=0; g_scr=g_brewFromWx?Screen::Weather:Screen::Home;
   }
   else if (g_scr==Screen::Brewing){

@@ -36,6 +36,10 @@ void Settings::load() {
   rotFlipped = p_.getBool("rf", false);
   rotRefAxis = p_.getChar("rx", -1);
   rotRefSign = p_.getChar("rs", 0);
+  bleEnabled = p_.getBool("be", true);
+  bleToken   = p_.getString("bt", "");
+  bleAddr    = p_.getString("ba", "");
+  bleAddrType= p_.getUChar("bat", 0);
   instId   = p_.getString("iid", "");
   size_t n = p_.getBytes("epk", ecPriv, sizeof ecPriv);
   ecPrivValid = (n == sizeof ecPriv);
@@ -67,6 +71,10 @@ void Settings::save() {
   p_.putBool  ("rf", rotFlipped);
   p_.putChar  ("rx", rotRefAxis);
   p_.putChar  ("rs", rotRefSign);
+  p_.putBool  ("be", bleEnabled);
+  p_.putString("bt", bleToken);
+  p_.putString("ba", bleAddr);
+  p_.putUChar ("bat", bleAddrType);
   p_.putString("iid", instId);
   if (ecPrivValid) p_.putBytes("epk", ecPriv, sizeof ecPriv);
   p_.end();
