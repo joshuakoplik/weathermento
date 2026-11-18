@@ -332,7 +332,16 @@ static void flushButton(const lmcloud::State& s,bool on){
   using BF=lmcloud::BackflushStatus;
   const char* label="FLUSH";
   uint16_t labelCol=INK_40;
-  if (s.backflush==BF::Requested){
+  bool failed = s.bfError.length() && millis()-s.bfErrorAtMs < cfg::BACKFLUSH_ERROR_SHOW_MS;
+  if (s.bfStarting){
+    // sent; waiting for the machine to confirm it's armed — a dot sweeps the ring
+    g_can.fillSmoothCircle(cx,cy,r+2,BRASS);
+    g_can.fillSmoothCircle(cx,cy,r,  FACE());
+    float a=(millis()%1200)/1200.f*360.f*DEG_TO_RAD;
+    g_can.fillSmoothCircle(cx+cosf(a)*(r-6),cy+sinf(a)*(r-6),3,LM_RED);
+    droplet(cx,cy+5,7,INK_40);
+    label="STARTING"; labelCol=FG();
+  } else if (s.backflush==BF::Requested){
     uint32_t el=millis()-s.bfPhaseAtMs;
     int left=(s.bfPhaseAtMs && el<cfg::BACKFLUSH_ARM_MS)
              ? (int)((cfg::BACKFLUSH_ARM_MS-el+999)/1000) : 0;
@@ -355,10 +364,11 @@ static void flushButton(const lmcloud::State& s,bool on){
     g_can.fillSmoothCircle(cx,cy,r,  FACE());
     droplet(cx-8,cy+8,5.5f,ink); droplet(cx+8,cy+8,5.5f,ink); droplet(cx,cy+1,7,ink);
     if (on) labelCol=FG();
+    if (failed){ label="FAILED"; labelCol=LM_RED; }
   }
   tracked(cx,cy+r+14,label,2,labelCol,&F_LABEL_SM,middle_center);
   // big hit-rect: the whole column right of the dial
-  if (on && s.backflush==BF::Off)
+  if (on && s.backflush==BF::Off && !s.bfStarting)
     g_btns.push_back({236,44,W-236,120,[]{ lmcloud::startBackflush(); }});
 }
 
@@ -775,7 +785,9 @@ static void renderControls(const lmcloud::State& s){
   // go/pause cycles. Reflect that state machine so a tap isn't a silent no-op:
   // START → MOVE PADDLE + countdown (armed) → FLUSHING/CLEANING (pulses) → START.
   tracked(18,y+18,"BACKFLUSH",2,LM_RED,&F_LABEL,middle_left);
-  if (s.backflush==lmcloud::BackflushStatus::Requested){
+  if (s.bfStarting){
+    tracked(W-18,y+18,"STARTING ...",1,LM_RED,&F_LABEL_SM,middle_right);
+  } else if (s.backflush==lmcloud::BackflushStatus::Requested){
     uint32_t el = millis()-s.bfPhaseAtMs;
     int left = (s.bfPhaseAtMs && el<cfg::BACKFLUSH_ARM_MS)
                ? (int)((cfg::BACKFLUSH_ARM_MS-el+999)/1000) : 0;
@@ -794,6 +806,8 @@ static void renderControls(const lmcloud::State& s){
     g_can.fillSmoothRoundRect(W-18-89,y+7,88,22,11,BG());
     tracked(W-18-45,y+18,"START",2,LM_RED,&F_LABEL,middle_center);
     g_btns.push_back({W-18-100,y+2,118,32,[]{ lmcloud::startBackflush(); }});
+    if (s.bfError.length() && millis()-s.bfErrorAtMs < cfg::BACKFLUSH_ERROR_SHOW_MS)
+      tracked(W-18-98,y+18,asciiUpper(s.bfError,14).c_str(),1,LM_RED,&F_LABEL_SM,middle_right);
   }
   y+=40;
   // smart standby
@@ -1155,6 +1169,7 @@ void tick(){
   if (settings.wxIdleSec && !t.isPressed() &&
       (g_scr==Screen::Home || g_scr==Screen::Controls || g_scr==Screen::Stats) &&
       lmcloud::state().backflush==lmcloud::BackflushStatus::Off &&
+      !lmcloud::state().bfStarting &&
       now-g_lastActivity > (uint32_t)settings.wxIdleSec*1000){
     goWeather();
   }
@@ -1170,7 +1185,8 @@ void tick(){
     if (p!=g_batPct || c!=g_batChg){ g_batPct=p; g_batChg=c; g_dirty=true; }
   }
 
-  bool fast = (g_scr==Screen::Brewing) || (scrollable && t.isPressed());
+  bool fast = (g_scr==Screen::Brewing) || (scrollable && t.isPressed()) ||
+              (g_scr==Screen::Home && lmcloud::state().bfStarting);
   bool due  = fast ? (now-g_lastFrame>60) : (now-g_lastFrame>1000);
   if (g_dirty||due){ g_lastFrame=now; g_dirty=false; render(); }
 }

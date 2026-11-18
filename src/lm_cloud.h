@@ -60,6 +60,13 @@ struct State {
                                                  // phase began; the machine aborts ~15s
                                                  // into Requested if the paddle isn't
                                                  // moved (cfg::BACKFLUSH_ARM_MS)
+  // The arm command is a round trip: POST → command id → the machine confirms
+  // over the WebSocket (command status + CMBackFlush "Requested"). Only then is
+  // it armed and the paddle countdown meaningful.
+  bool          bfStarting   = false;            // sent, waiting for the machine
+  uint32_t      bfStartAtMs  = 0;
+  String        bfError;                         // last failure, "" = none
+  uint32_t      bfErrorAtMs  = 0;
   std::vector<Firmware>  firmwares;
   std::vector<WakeSched> schedules;
   // misc

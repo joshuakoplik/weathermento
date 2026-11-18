@@ -105,6 +105,9 @@ constexpr uint32_t BACKFLUSH_ARM_MS  = 15000;   // machine self-aborts if the pa
 constexpr uint32_t BACKFLUSH_ARM_GRACE_MS = 5000;   // slack before mirroring that abort
                                                     // locally (command + status latency)
 constexpr uint32_t BACKFLUSH_CLEAN_MAX_MS = 300000; // stuck-"Cleaning" safety net
+constexpr uint32_t BACKFLUSH_CONFIRM_MS = 20000;    // give up waiting for the machine
+                                                    // to confirm it's armed
+constexpr uint32_t BACKFLUSH_ERROR_SHOW_MS = 8000;  // how long FAILED stays on screen
 
 struct ShotHoldChoice {
   uint16_t seconds;   // 0 = until tap

@@ -96,12 +96,23 @@ static volatile uint32_t g_bfReqIgnoreUntil = 0;
 // One forced dashboard poll after a local expiry — WS pushes are exactly what
 // went missing, so resync over REST even while subscribed.
 static volatile bool g_bfResync = false;
+// id of the in-flight backflush command (cloud task only)
+static String g_bfCmdId;
+static void bfFail(const String& why) {          // call under StateLock
+  g_state.bfStarting = false;
+  g_state.bfError    = why;
+  g_state.bfErrorAtMs = millis();
+  g_bfCmdId = "";
+  Serial.printf("[lm] backflush failed: %s\n", why.c_str());
+}
 
 // Single writer for the backflush pair: stamp the phase clock on transitions,
 // clear it when idle. Call under StateLock.
 static void bfSet(BackflushStatus bs) {
-  if (bs != g_state.backflush)
+  if (bs != g_state.backflush) {
+    Serial.printf("[lm] backflush %d -> %d\n", (int)g_state.backflush, (int)bs);
     g_state.bfPhaseAtMs = (bs == BackflushStatus::Off) ? 0 : millis();
+  }
   g_state.backflush = bs;
 }
 
@@ -152,8 +163,13 @@ static void applyWidgets(JsonArrayConst widgets) {
       if (!(bs == BackflushStatus::Off && g_bfHoldUntil &&
             (int32_t)(millis() - g_bfHoldUntil) < 0) &&
           !(bs == BackflushStatus::Requested && g_bfReqIgnoreUntil &&
-            (int32_t)(millis() - g_bfReqIgnoreUntil) < 0))
-        bfSet(bs);
+            (int32_t)(millis() - g_bfReqIgnoreUntil) < 0)) {
+        if (bs != BackflushStatus::Off && g_state.bfStarting) {
+          g_state.bfStarting = false;            // machine confirmed: armed
+          g_bfCmdId = "";
+        }
+        bfSet(bs);                               // phase clock starts here, so
+      }                                          // the countdown matches the app
     } else if (!strcmp(code, "CMPreBrewing")) {
       if (!pending(Cmd::PreMode))
         g_state.preMode = parsePreMode(o["mode"] | "Disabled");
@@ -185,6 +201,16 @@ static void applyDashboard(JsonDocument& doc) {
   g_state.modelName = doc["modelName"] | g_state.modelName;
   g_state.serial    = doc["serialNumber"] | g_state.serial;
   if (!doc["widgets"].isNull()) applyWidgets(doc["widgets"].as<JsonArrayConst>());
+  // Command outcomes ride along in dashboard pushes: [{id, status, errorCode}]
+  for (JsonObjectConst c : doc["commands"].as<JsonArrayConst>()) {
+    const char* id = c["id"] | "";
+    const char* st = c["status"] | "";
+    const char* ec = c["errorCode"] | "";
+    bool mine = g_bfCmdId.length() && g_bfCmdId == id;
+    bool bad  = strcmp(st,"Success") && strcmp(st,"Pending") && strcmp(st,"InProgress");
+    if (mine || bad) Serial.printf("[lm] command %.8s %s %s\n", id, st, ec);
+    if (mine && bad) bfFail(*ec ? String(ec) : String(st));
+  }
   if (g_state.machine != prevM)
     Serial.printf("[lm] machine %d -> %d (brewStart=%lld)\n",
                   (int)prevM, (int)g_state.machine, (long long)g_state.brewingStartMs);
@@ -347,9 +373,17 @@ static void pollSlowState() {
   changed();
 }
 
-static bool sendCommand(const char* cmd, JsonDocument& body) {
+static bool sendCommand(const char* cmd, JsonDocument& body, String* cmdId = nullptr) {
   String s; serializeJson(body, s);
-  int code = httpJson("POST", "/things/" + settings.lmSerial + "/command/" + cmd, s, nullptr, true);
+  JsonDocument resp;
+  int code = httpJson("POST", "/things/" + settings.lmSerial + "/command/" + cmd, s, &resp, true);
+  // reply is [{id, status:"Pending", ...}]; the outcome arrives over the WS
+  JsonVariantConst r0 = resp.as<JsonVariantConst>();
+  if (r0.is<JsonArrayConst>()) r0 = r0[0];
+  const char* id = r0["id"] | "";
+  Serial.printf("[lm] cmd %s -> %d %.8s %s %s\n", cmd, code, id,
+                (const char*)(r0["status"] | ""), (const char*)(r0["errorCode"] | ""));
+  if (cmdId) *cmdId = id;
   return code >= 200 && code < 300;
 }
 
@@ -414,8 +448,10 @@ bool setSmartStandby(bool en,int min,bool afterBrew){
   changed(); enqDebounced(Cmd::SmartStandby,en,(float)min,afterBrew?1.f:0.f); return true;
 }
 bool startBackflush() {
-  { StateLock _l; bfSet(BackflushStatus::Requested); }
-  g_bfHoldUntil = millis() + 2500;   // bridge the optimistic→cloud-confirm gap
+  // Not optimistic any more: show "starting" and wait for the machine to
+  // report Requested before counting down (as the official app does).
+  { StateLock _l;
+    g_state.bfStarting = true; g_state.bfStartAtMs = millis(); g_state.bfError = ""; }
   g_bfReqIgnoreUntil = 0;            // fresh arm — accept cloud confirms again
   changed(); enq(Cmd::Backflush); return true;
 }
@@ -447,8 +483,15 @@ static void execCmd(const QItem& i){
       b["enabled"]=i.b; b["minutes"]=(int)i.f;
       b["after"]=(i.f2>0.5f)?"LastBrewing":"PowerOn";
       sendCommand("CoffeeMachineSettingSmartStandBy",b); break;
-    case Cmd::Backflush:  b["enabled"]=true;
-                          sendCommand("CoffeeMachineBackFlushStartCleaning",b); break;
+    case Cmd::Backflush: {
+      b["enabled"]=true;
+      String id;
+      bool ok = sendCommand("CoffeeMachineBackFlushStartCleaning", b, &id);
+      StateLock _l;
+      if (!ok)                    bfFail("request failed");
+      else if (g_state.bfStarting) g_bfCmdId = id;
+      changed();
+      break; }
     case Cmd::Reconnect:
       g_ws.disconnect(); WiFi.disconnect(true,false);
       g_access=""; g_refresh=""; g_registered=false; g_wsSubscribed=false;
@@ -601,6 +644,12 @@ void loop() {
       g_bfResync = true;                         // resync with the cloud's truth
       changed();
     }
+  }
+  if (g_state.bfStarting &&
+      millis() - g_state.bfStartAtMs > cfg::BACKFLUSH_CONFIRM_MS) {
+    StateLock _l;
+    bfFail("no reply from machine");
+    changed();
   }
   if (g_wantReconnect) { g_wantReconnect=false; execCmd({Cmd::Reconnect,0,0,false}); }
   if (!ensureWifi()) { setNet(Net::Down, "wifi"); return; }
