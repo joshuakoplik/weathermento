@@ -158,7 +158,7 @@ static void task(void*) {
 void begin() {
   g_mtx = xSemaphoreCreateMutex();
   // Low priority, core 0 alongside lmcloud — a slow fetch never stalls the UI.
-  xTaskCreatePinnedToCore(task, "weather", 10 * 1024, nullptr, 1, &g_task, 0);
+  xTaskCreatePinnedToCore(task, "weather", 16 * 1024, nullptr, 1, &g_task, 0);
 }
 
 // ── geocoding ────────────────────────────────────────────────────────────────

@@ -6,6 +6,10 @@
 #include "ui.h"
 #include "weather.h"
 
+// The UI loop runs the Setup → weather city lookup (HTTPS + JSON) inline; the
+// Arduino default 8 KB loopTask stack overflows during the TLS handshake.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
 static TaskHandle_t g_cloudTask;
 static void cloudTask(void*) {
   lmcloud::begin();
