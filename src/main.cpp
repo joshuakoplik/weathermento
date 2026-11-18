@@ -52,6 +52,7 @@ void setup() {
   c.fallback_board  = m5::board_t::board_M5StackCore2;   // if autodetect comes up empty
   M5.begin(c);
   M5.Mic.end();                // belt and braces: make sure the mic driver is stopped
+  M5.Speaker.setVolume(cfg::BEEP_VOLUME);   // quieter touch beeps
   Serial.printf("[boot] reset reason %d, board %d (Core2 = %d)\n",
                 (int)esp_reset_reason(), (int)M5.getBoard(),
                 (int)m5::board_t::board_M5StackCore2);

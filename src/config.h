@@ -19,6 +19,9 @@ constexpr uint16_t LM_RED    = 0xC085;   // #C8102E  the only accent
 constexpr uint16_t NIGHT     = 0x0861;   // #0E0E0C  brewing ground
 constexpr uint16_t LUME      = 0xEF3A;   // #E8E4D0  luminous markers on dark
 
+// Speaker master volume for touch beeps (0-255; M5Unified default is 64)
+constexpr uint8_t BEEP_VOLUME = 24;
+
 // Layout
 constexpr int W = 320, H = 240;
 constexpr int KEY_H  = 38;               // piano-key bar
