@@ -7,6 +7,24 @@
 #include "weather.h"
 #include "netlock.h"
 #include "lm_ble.h"
+#include <mbedtls/platform.h>
+#include <esp_heap_caps.h>
+
+// TLS allocations → PSRAM. The prebuilt framework sets
+// CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC, forcing every mbedTLS buffer into internal
+// RAM; with the Bluetooth controller resident there's no longer room for the LM
+// WebSocket session plus a weather fetch ("SSL - Memory allocation failed").
+// Big blocks (record buffers, certs) go to PSRAM; small hot ones stay internal.
+// Either side falls back to the other. (Same idea as IDF's EXTERNAL_MEM_ALLOC.)
+static void* tlsCalloc(size_t n, size_t size) {
+  constexpr uint32_t CAP_EXT = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;   // (PS is a
+  constexpr uint32_t CAP_INT = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT; // CPU reg macro)
+  bool big = n * size >= 512;
+  void* p = heap_caps_calloc(n, size, big ? CAP_EXT : CAP_INT);
+  if (!p) p = heap_caps_calloc(n, size, big ? CAP_INT : CAP_EXT);
+  return p;
+}
+static void tlsFree(void* p) { heap_caps_free(p); }
 
 // The UI loop runs the Setup → weather city lookup (HTTPS + JSON) inline; the
 // Arduino default 8 KB loopTask stack overflows during the TLS handshake.
@@ -98,6 +116,7 @@ void setup() {
   }
 
   netlock::init();                          // before the network tasks start
+  mbedtls_platform_set_calloc_free(tlsCalloc, tlsFree);   // before any TLS
   if (!lmcrypto::init()) { ui::splash("crypto init failed"); delay(3000); }
   // Network/cloud on core 0; UI/touch stays on core 1 (Arduino loop).
   xTaskCreatePinnedToCore(cloudTask, "lmcloud", 12*1024, nullptr, 2, &g_cloudTask, 0);
