@@ -5,6 +5,7 @@
 #include "lm_cloud.h"
 #include "ui.h"
 #include "weather.h"
+#include "netlock.h"
 
 // The UI loop runs the Setup → weather city lookup (HTTPS + JSON) inline; the
 // Arduino default 8 KB loopTask stack overflows during the TLS handshake.
@@ -32,6 +33,7 @@ void setup() {
     ui::splash("waking up …");
   }
 
+  netlock::init();                          // before the network tasks start
   if (!lmcrypto::init()) { ui::splash("crypto init failed"); delay(3000); }
   // Network/cloud on core 0; UI/touch stays on core 1 (Arduino loop).
   xTaskCreatePinnedToCore(cloudTask, "lmcloud", 12*1024, nullptr, 2, &g_cloudTask, 0);

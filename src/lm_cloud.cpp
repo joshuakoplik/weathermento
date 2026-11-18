@@ -3,6 +3,7 @@
 #include "storage.h"
 #include "config.h"
 #include "lm_ca.h"
+#include "netlock.h"
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -193,6 +194,7 @@ static void applyDashboard(JsonDocument& doc) {
 // ── REST ─────────────────────────────────────────────────────────────────────
 static int httpJson(const char* method, const String& path, const String& body,
                     JsonDocument* out, bool auth) {
+  netlock::Guard _net;
   WiFiClientSecure tls; tls.setCACert(LM_ROOT_CA);      // LM rotates certs; pinning is brittle
   HTTPClient http; http.setReuse(false); http.setTimeout(12000);
   String url = String(cfg::LM_API) + path;
@@ -219,6 +221,7 @@ static int httpJson(const char* method, const String& path, const String& body,
 }
 
 static bool registerInstall() {
+  netlock::Guard _net;
   WiFiClientSecure tls; tls.setCACert(LM_ROOT_CA);
   HTTPClient http; http.setTimeout(12000);
   if (!http.begin(tls, String(cfg::LM_API) + "/auth/init")) return false;

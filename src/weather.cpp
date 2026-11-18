@@ -1,6 +1,9 @@
 #include "weather.h"
 #include "storage.h"
 #include "wx_ca.h"
+#include "netlock.h"
+#include "lm_cloud.h"
+#include <esp_heap_caps.h>
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -51,7 +54,16 @@ static void setError(const String& e) {
 // Open-Meteo moved to a CA we don't ship), retry once unverified: the data is
 // public weather, nothing secret is sent, and a stale root shouldn't blank the
 // idle screen. An HTTP-level error (server answered) is never retried.
+static void logHeap(const char* tag) {
+  Serial.printf("[wx] %s: internal free %u, largest block %u, psram free %u\n", tag,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
 static bool httpGet(const String& url, String& body, String& err) {
+  netlock::Guard _net;                 // never overlap an LM REST call
+  logHeap("before fetch");
   for (int pass = 0; pass < 2; ++pass) {
     WiFiClientSecure tls;
     if (pass == 0) tls.setCACert(WX_ROOT_CAS);
@@ -152,6 +164,7 @@ static void task(void*) {
   bool     due    = true;
   uint32_t nextAt = 0;
   bool     lastF  = settings.fahrenheit;
+  uint32_t wifiUpAt = 0;               // millis() when WiFi was first seen up
   for (;;) {
     if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000))) due = true;
     if (s_rtcCrashes && millis() > 180000) s_rtcCrashes = 0;   // 3 min stable
@@ -160,8 +173,12 @@ static void task(void*) {
     if (!due && (int32_t)(millis() - nextAt) >= 0) due = true;
     if (!due) continue;
     if (!settings.wxHasLoc) continue;                 // stays due until a city is set
-    if (WiFi.status() != WL_CONNECTED) continue;      // lmcloud owns the WiFi link
+    if (WiFi.status() != WL_CONNECTED) { wifiUpAt = 0; continue; }  // lmcloud owns WiFi
+    if (!wifiUpAt) wifiUpAt = millis() ? millis() : 1;
     if (time(nullptr) < CLOCK_SANE) continue;         // cert validity needs real time
+    // Let LM finish its connect burst (register, sign-in, polls, WebSocket)
+    // first; if it never gets there (bad LM creds), go ahead after 45 s.
+    if (lmcloud::state().net != lmcloud::Net::WsLive && millis() - wifiUpAt < 45000) continue;
     bool ok = fetch();
     due    = false;
     nextAt = millis() + (ok ? REFRESH_MS : RETRY_MS);
