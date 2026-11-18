@@ -42,6 +42,27 @@ static void i2cBusRecover(int sda = 21, int scl = 22) {
   if (pulses) Serial.printf("[boot] I2C bus was stuck; freed after %d clocks\n", pulses);
 }
 
+// Black-screen-after-upload guard. After esptool's reset the firmware can
+// come up with the panel and touch dead (backlight on), while a second reset
+// (the side button) fixes it. Detect that state and restart once or twice by
+// ourselves. RTC slow memory survives esp_restart(); the magic word guards
+// against power-on garbage.
+RTC_NOINIT_ATTR static uint32_t s_hwMagic, s_hwRetries;
+static constexpr uint32_t HW_MAGIC = 0x48575354;   // "HWST"
+
+static bool hwOk() {
+  return M5.getBoard() == m5::board_t::board_M5StackCore2 && M5.Display.touch() != nullptr;
+}
+static void hwReport(const char* tag) {
+  Serial.printf("[%s] reset reason %d, board %d (Core2 = %d), touch %s, display %dx%d, "
+                "self-restarts %u\n", tag,
+                (int)esp_reset_reason(), (int)M5.getBoard(),
+                (int)m5::board_t::board_M5StackCore2,
+                M5.Display.touch() ? "yes" : "NO",
+                (int)M5.Display.width(), (int)M5.Display.height(),
+                (unsigned)(s_hwMagic == HW_MAGIC ? s_hwRetries : 0));
+}
+
 void setup() {
   Serial.begin(115200);
   i2cBusRecover();
@@ -53,9 +74,19 @@ void setup() {
   M5.begin(c);
   M5.Mic.end();                // belt and braces: make sure the mic driver is stopped
   M5.Speaker.setVolume(cfg::BEEP_VOLUME);   // quieter touch beeps
-  Serial.printf("[boot] reset reason %d, board %d (Core2 = %d)\n",
-                (int)esp_reset_reason(), (int)M5.getBoard(),
-                (int)m5::board_t::board_M5StackCore2);
+  if (s_hwMagic != HW_MAGIC) { s_hwMagic = HW_MAGIC; s_hwRetries = 0; }
+  hwReport("boot");
+  if (!hwOk()) {
+    if (s_hwRetries < 2) {
+      ++s_hwRetries;
+      Serial.println("[boot] display/touch not detected - restarting to retry");
+      Serial.flush(); delay(100);
+      esp_restart();
+    }
+    Serial.println("[boot] display/touch still not detected after retries");
+  } else {
+    s_hwRetries = 0;
+  }
 
   settings.load();
   ui::begin();
@@ -74,12 +105,13 @@ void setup() {
 
 void loop() {
   // serial debug shell: '0'..'9' force screen ('9'=weather) ('1'→brewing@24.7s), 's' screenshot,
-  // 'b' arm backflush (same as tapping START), 'w' forget weather location
+  // 'b' arm backflush (same as tapping START), 'w' forget weather location, 'i' hardware info
   while (Serial.available()) {
     int c=Serial.read();
     if (c>='0'&&c<='9') ui::debugScreen(c-'0', c=='1'?24.7f:0);
     else if (c=='d'||c=='l') ui::setDark(c=='d');
     else if (c=='b') lmcloud::startBackflush();
+    else if (c=='i') hwReport("info");
     else if (c=='w') { settings.wxHasLoc=false; settings.wxCity=""; settings.save();
                        Serial.println("[wx] location cleared"); }
     else if (c=='s') { vTaskSuspend(g_cloudTask); ui::screenshot(); vTaskResume(g_cloudTask); }
