@@ -23,9 +23,10 @@ void Settings::load() {
   if (shotHoldIndex >= cfg::SHOT_HOLD_COUNT) shotHoldIndex = cfg::DEF_SHOT_HOLD_INDEX;
   dimSec     = p_.getUChar("ds", 0);
   sleepMin   = p_.getUChar("sm", 0);
-  // The weather build is a wall display: on first boot of this firmware, clear
-  // the dim/sleep timers an earlier Strumento install may have saved.
-  if (!p_.getBool("wxv", false)) { dimSec = 0; sleepMin = 0; }
+  // The weather build is an always-on wall display: never dim, never sleep,
+  // whatever an earlier install (or an old Setup tap) saved. The UI no longer
+  // offers either setting.
+  dimSec = 0; sleepMin = 0;
   wxCity     = p_.getString("wc", "");
   wxLat      = p_.getFloat("wla", 0);
   wxLon      = p_.getFloat("wlo", 0);

@@ -81,8 +81,6 @@ static int8_t   g_batPct       = -1;      // 0-100, -1 = unknown
 static bool     g_batChg       = false;
 static bool     g_dimmed       = false;
 static uint32_t g_lastActivity = 0;
-static constexpr uint8_t DIM_OPTS[]   = {0,15,30,60,120};
-static constexpr uint8_t SLEEP_OPTS[] = {0,1,2,5,10,30};
 static constexpr uint8_t WX_IDLE_OPTS[] = {0,15,30,60,120,240};
 template<size_t N>
 static uint8_t nextOpt(const uint8_t (&a)[N], uint8_t cur){
@@ -897,13 +895,9 @@ static void renderSettings(){
     g_dirty=true;
   }); y+=36;
   auto secLbl=[](uint8_t s)->String{ return s==0?"OFF":s<60?String(s)+"s":String(s/60)+"m"; };
-  auto minLbl=[](uint8_t m)->String{ return m==0?"OFF":String(m)+"m"; };
-  cycleRow(y,"DIM AFTER", secLbl(settings.dimSec).c_str(), []{
-    settings.dimSec=nextOpt(DIM_OPTS,settings.dimSec); settings.save(); g_dirty=true;
-  }); y+=40;
-  cycleRow(y,"AUTO SLEEP", minLbl(settings.sleepMin).c_str(), []{
-    settings.sleepMin=nextOpt(SLEEP_OPTS,settings.sleepMin); settings.save(); g_dirty=true;
-  }); y+=40;
+  // No DIM AFTER / AUTO SLEEP rows: this build is an always-on wall display
+  // (storage.cpp pins both to off), and a stray tap while scrolling used to
+  // re-enable them.
   cycleRow(y,"WEATHER AFTER", secLbl(settings.wxIdleSec).c_str(), []{
     settings.wxIdleSec=nextOpt(WX_IDLE_OPTS,settings.wxIdleSec); settings.save(); g_dirty=true;
   }); y+=40;

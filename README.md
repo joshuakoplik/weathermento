@@ -65,9 +65,9 @@ This fork adds a weather screen that acts as the idle display:
   Setup), then returns to weather when the shot hold ends.
 - **Untouched for a while** (default 1 min, Setup → *weather after*), the
   device drifts back to weather.
-- The screen stays on: dim and auto-sleep default to off (and are reset to off
-  once when upgrading from stock Strumento). Both are still in Setup. Run it
-  on USB power.
+- The screen stays on: this build never dims or auto-sleeps (those Setup
+  options are removed). Run it on USB power. The power button still turns it
+  off.
 
 Set your location in **Setup → weather**: type a city (`Portland, Oregon`,
 `Paris, FR`) or raw coordinates (`45.52, -122.68`). Data comes from
